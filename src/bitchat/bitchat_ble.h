@@ -26,11 +26,11 @@ private:
 
     // BLE server (peripheral role — other bitchat devices connect to us)
     NimBLEServer *_server = nullptr;
-    NimBLECharacteristic *_tx_char = nullptr;
-    NimBLECharacteristic *_rx_char = nullptr;
+    // Single characteristic for both directions (write + notify)
+    NimBLECharacteristic *_msg_char = nullptr;
 
     // Incoming message buffer (populated by BLE write callback)
-    static constexpr int RX_BUF_SIZE = 512;
+    static constexpr int RX_BUF_SIZE = BITCHAT_BLE_MTU;
     uint8_t _rx_buf[RX_BUF_SIZE] = {};
     volatile int _rx_len = 0;
     volatile bool _rx_ready = false;
@@ -40,6 +40,14 @@ private:
     void _start_advertising();
     void _process_incoming();
     void _scan_for_peers();
+
+    // TLV helpers
+    static int _tlv_encode(uint8_t *buf, uint8_t type, const uint8_t *value, uint8_t len);
+    static bool _tlv_find(const uint8_t *buf, int buf_len, uint8_t type,
+                          const uint8_t **value, uint8_t *len);
+
+    // PKCS#7 padding
+    static int _pad_packet(uint8_t *buf, int data_len, int buf_size);
 
     // BLE callback friend
     friend class BitchatBLECallbacks;

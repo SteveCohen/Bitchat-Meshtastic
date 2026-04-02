@@ -5,7 +5,7 @@
 static const char *TAG = "BitchatBLE";
 
 // ── BLE Write Callback ───────────────────────────────
-// Called when a remote bitchat device writes a message to our RX characteristic.
+// Called when a remote bitchat device writes to our message characteristic.
 
 class BitchatBLECallbacks : public NimBLECharacteristicCallbacks {
 public:
@@ -25,12 +25,69 @@ private:
     BitchatBLE *_parent;
 };
 
+// ── TLV helpers ──────────────────────────────────────
+
+int BitchatBLE::_tlv_encode(uint8_t *buf, uint8_t type, const uint8_t *value, uint8_t len) {
+    buf[0] = type;
+    buf[1] = len;
+    memcpy(buf + 2, value, len);
+    return 2 + len;
+}
+
+bool BitchatBLE::_tlv_find(const uint8_t *buf, int buf_len, uint8_t type,
+                            const uint8_t **value, uint8_t *len) {
+    int pos = 0;
+    while (pos + 2 <= buf_len) {
+        uint8_t t = buf[pos];
+        uint8_t l = buf[pos + 1];
+        if (pos + 2 + l > buf_len) break;
+        if (t == type) {
+            *value = buf + pos + 2;
+            *len = l;
+            return true;
+        }
+        pos += 2 + l;
+    }
+    return false;
+}
+
+// ── PKCS#7 padding ───────────────────────────────────
+
+int BitchatBLE::_pad_packet(uint8_t *buf, int data_len, int buf_size) {
+    // Find target block size
+    int target;
+    if (data_len <= 256) target = 256;
+    else if (data_len <= 512) target = 512;
+    else if (data_len <= 1024) target = 1024;
+    else target = 2048;
+
+    if (target > buf_size) target = buf_size;
+
+    int pad_len = target - data_len;
+    if (pad_len <= 0) return data_len;
+
+    memset(buf + data_len, (uint8_t)pad_len, pad_len);
+    return target;
+}
+
+// ── Unpad PKCS#7 ─────────────────────────────────────
+
+static int unpad_packet(const uint8_t *buf, int buf_len) {
+    if (buf_len <= 0) return 0;
+    uint8_t pad_val = buf[buf_len - 1];
+    if (pad_val == 0 || pad_val > buf_len) return buf_len; // not padded
+    // Verify padding bytes
+    for (int i = buf_len - pad_val; i < buf_len; i++) {
+        if (buf[i] != pad_val) return buf_len; // invalid padding
+    }
+    return buf_len - pad_val;
+}
+
 // ── BitchatBLE implementation ────────────────────────
 
 bool BitchatBLE::begin() {
     Serial.printf("[%s] Initializing...\n", TAG);
 
-    // Initialize bridge identity
     if (!bitchat_identity_init(&_keypair)) {
         Serial.printf("[%s] Failed to init identity\n", TAG);
         return false;
@@ -38,7 +95,7 @@ bool BitchatBLE::begin() {
 
     char fp_short[16];
     bitchat_fingerprint_short(_keypair.fingerprint, fp_short, sizeof(fp_short));
-    Serial.printf("[%s] Bridge fingerprint: %s...\n", TAG, fp_short);
+    Serial.printf("[%s] Bridge peer ID: %s...\n", TAG, fp_short);
 
     _init_ble_server();
     _start_advertising();
@@ -53,8 +110,7 @@ void BitchatBLE::end() {
         NimBLEDevice::deinit(true);
         _active = false;
         _server = nullptr;
-        _tx_char = nullptr;
-        _rx_char = nullptr;
+        _msg_char = nullptr;
         Serial.printf("[%s] BLE stopped\n", TAG);
     }
 }
@@ -66,7 +122,6 @@ bool BitchatBLE::is_active() const {
 void BitchatBLE::loop() {
     if (!_active) return;
 
-    // Process any incoming BLE message
     if (_rx_ready) {
         _process_incoming();
         _rx_ready = false;
@@ -77,56 +132,70 @@ void BitchatBLE::loop() {
 }
 
 bool BitchatBLE::send_text(const char *text) {
-    if (!_active || !_tx_char) return false;
+    if (!_active || !_msg_char) return false;
 
     int text_len = strlen(text);
+    if (text_len > BITCHAT_MAX_TEXT_LEN) text_len = BITCHAT_MAX_TEXT_LEN;
 
-    // Construct a BitchatPacket for broadcast over BLE NUS.
+    // ── Build BitchatPacket ──────────────────────────────
     //
-    // Bitchat packet format:
-    //   Fixed header (14 bytes):
-    //     [version 1B][type 1B][TTL 1B][timestamp 8B][flags 1B][payload_len 2B]
-    //   Variable fields:
-    //     [sender_id 8B]  (always present — our bridge peer ID)
-    //     [payload ...]   (UTF-8 text content)
+    // Format:
+    //   [header 14B][sender_id 8B][TLV payload ...][PKCS#7 padding]
     //
-    // TODO Phase 2: Add Noise encryption, Ed25519 signature, PKCS#7 padding
+    // TLV payload for a broadcast text message:
+    //   [TLV_NICKNAME][TLV_TEXT]
 
-    uint8_t packet[BITCHAT_HEADER_LEN + BITCHAT_SENDER_ID_LEN + 256];
+    uint8_t packet[2048];
     int pos = 0;
 
     // -- Fixed header (14 bytes) --
-    // Version
-    packet[pos++] = 0x01;
-    // Type: 0x01 = broadcast text (message)
-    packet[pos++] = 0x01;
-    // TTL
-    packet[pos++] = BITCHAT_MAX_HOPS;
-    // Timestamp (8 bytes, milliseconds — use millis() as placeholder)
+    packet[pos++] = 0x01;                       // version
+    packet[pos++] = BITCHAT_PKT_MESSAGE;        // type
+    packet[pos++] = BITCHAT_MAX_HOPS;           // TTL
+
+    // Timestamp (8 bytes big-endian, milliseconds)
     uint64_t ts = (uint64_t)millis();
     for (int i = 7; i >= 0; i--) {
         packet[pos++] = (ts >> (i * 8)) & 0xFF;
     }
-    // Flags: 0x00 = no recipient, no signature, not compressed
-    packet[pos++] = 0x00;
-    // Payload length (2 bytes, big-endian)
-    int payload_len = (text_len < 220) ? text_len : 220;
-    packet[pos++] = (payload_len >> 8) & 0xFF;
-    packet[pos++] = payload_len & 0xFF;
 
-    // -- Sender ID (8 bytes — first 8 bytes of our fingerprint) --
+    packet[pos++] = 0x00;                       // flags: broadcast, no sig, no compression
+
+    // -- Payload: build TLV into a temp buffer, then write length + TLVs --
+    uint8_t tlv_buf[256];
+    int tlv_len = 0;
+
+    // TLV_NICKNAME
+    const char *nick = BRIDGE_NAME;
+    int nick_len = strlen(nick);
+    if (nick_len > 31) nick_len = 31;
+    tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_NICKNAME,
+                           (const uint8_t *)nick, nick_len);
+
+    // TLV_TEXT
+    tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_TEXT,
+                           (const uint8_t *)text, text_len);
+
+    // Payload length (2 bytes big-endian)
+    packet[pos++] = (tlv_len >> 8) & 0xFF;
+    packet[pos++] = tlv_len & 0xFF;
+
+    // -- Sender ID (8 bytes = first 8 bytes of fingerprint) --
     memcpy(packet + pos, _keypair.fingerprint, BITCHAT_SENDER_ID_LEN);
     pos += BITCHAT_SENDER_ID_LEN;
 
-    // -- Payload (UTF-8 text) --
-    memcpy(packet + pos, text, payload_len);
-    pos += payload_len;
+    // -- TLV payload --
+    memcpy(packet + pos, tlv_buf, tlv_len);
+    pos += tlv_len;
 
-    // Send via BLE notification
-    _tx_char->setValue(packet, pos);
-    _tx_char->notify();
+    // -- PKCS#7 padding --
+    pos = _pad_packet(packet, pos, sizeof(packet));
 
-    Serial.printf("[%s] Broadcast %d bytes over BLE\n", TAG, pos);
+    // Send via BLE notification on the single message characteristic
+    _msg_char->setValue(packet, pos);
+    _msg_char->notify();
+
+    Serial.printf("[%s] Broadcast %d bytes (padded) over BLE\n", TAG, pos);
     return true;
 }
 
@@ -134,25 +203,19 @@ bool BitchatBLE::send_text(const char *text) {
 
 void BitchatBLE::_init_ble_server() {
     NimBLEDevice::init(BRIDGE_NAME);
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9); // Max transmit power
+    NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+    NimBLEDevice::setMTU(BITCHAT_BLE_MTU);
 
     _server = NimBLEDevice::createServer();
 
-    // Create bitchat service
     NimBLEService *service = _server->createService(BITCHAT_SERVICE_UUID);
 
-    // TX characteristic: bridge → remote peers (notify)
-    _tx_char = service->createCharacteristic(
-        BITCHAT_CHAR_TX_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+    // Single characteristic for both directions: write to send, notify to receive
+    _msg_char = service->createCharacteristic(
+        BITCHAT_MSG_CHAR_UUID,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY
     );
-
-    // RX characteristic: remote peers → bridge (write)
-    _rx_char = service->createCharacteristic(
-        BITCHAT_CHAR_RX_UUID,
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
-    );
-    _rx_char->setCallbacks(new BitchatBLECallbacks(this));
+    _msg_char->setCallbacks(new BitchatBLECallbacks(this));
 
     service->start();
 }
@@ -165,27 +228,19 @@ void BitchatBLE::_start_advertising() {
 }
 
 void BitchatBLE::_process_incoming() {
-    // Parse the received BLE data as a bitchat packet.
-    //
-    // Format: [header 14B][sender_id 8B][payload ...][signature 64B if flagged]
-    //
-    // Header layout:
-    //   [0]    version (1B)
-    //   [1]    type (1B)
-    //   [2]    TTL (1B)
-    //   [3-10] timestamp (8B, ms)
-    //   [11]   flags (1B): bit0=hasRecipient, bit1=hasSignature, bit2=isCompressed
-    //   [12-13] payload_len (2B, big-endian)
+    // Remove PKCS#7 padding first
+    int pkt_len = unpad_packet(_rx_buf, _rx_len);
 
+    // Minimum: 14-byte header + 8-byte sender_id
     int min_size = BITCHAT_HEADER_LEN + BITCHAT_SENDER_ID_LEN;
-    if (_rx_len < min_size) {
-        Serial.printf("[%s] Received runt packet (%d bytes, need %d)\n", TAG, _rx_len, min_size);
+    if (pkt_len < min_size) {
+        Serial.printf("[%s] Runt packet (%d bytes after unpad)\n", TAG, pkt_len);
         return;
     }
 
     const uint8_t *pkt = _rx_buf;
 
-    // Parse header
+    // -- Parse header --
     // uint8_t version = pkt[0];
     uint8_t type = pkt[1];
     // uint8_t ttl = pkt[2];
@@ -193,46 +248,70 @@ void BitchatBLE::_process_incoming() {
     uint8_t flags = pkt[11];
     uint16_t payload_len = (pkt[12] << 8) | pkt[13];
 
-    // Calculate variable field offsets
+    // -- Variable fields --
     int offset = BITCHAT_HEADER_LEN;
 
     // Sender ID (always present)
     const uint8_t *sender_id = pkt + offset;
     offset += BITCHAT_SENDER_ID_LEN;
 
-    // Recipient ID (8 bytes, if hasRecipient flag)
-    if (flags & 0x01) {
-        offset += 8; // skip recipient ID
+    // Optional recipient ID
+    if (flags & BITCHAT_FLAG_HAS_RECIPIENT) {
+        offset += 8;
     }
 
-    // Payload starts here
-    if (offset + payload_len > _rx_len) {
-        Serial.printf("[%s] Truncated packet (need %d, have %d)\n", TAG, offset + payload_len, _rx_len);
+    // Payload
+    if (offset + payload_len > pkt_len) {
+        Serial.printf("[%s] Truncated payload\n", TAG);
         return;
     }
 
-    // Only handle broadcast text for now
-    if (type != 0x01) {
+    const uint8_t *payload = pkt + offset;
+
+    // Only handle plaintext message packets for now
+    if (type != BITCHAT_PKT_MESSAGE) {
         Serial.printf("[%s] Ignoring packet type 0x%02x\n", TAG, type);
         return;
     }
 
-    // Extract text
+    // Parse TLV payload to extract nickname and text
+    const uint8_t *nick_val = nullptr;
+    uint8_t nick_len = 0;
+    const uint8_t *text_val = nullptr;
+    uint8_t text_len = 0;
+
+    _tlv_find(payload, payload_len, BITCHAT_TLV_NICKNAME, &nick_val, &nick_len);
+    _tlv_find(payload, payload_len, BITCHAT_TLV_TEXT, &text_val, &text_len);
+
+    if (!text_val || text_len == 0) {
+        Serial.printf("[%s] No TLV_TEXT in message\n", TAG);
+        return;
+    }
+
+    // Build BridgeMessage
     BridgeMessage msg;
     msg.origin = MessageOrigin::BITCHAT;
     msg.timestamp_ms = millis();
 
-    int copy_len = (payload_len < sizeof(msg.text) - 1) ? payload_len : sizeof(msg.text) - 1;
-    memcpy(msg.text, pkt + offset, copy_len);
+    // Copy text
+    int copy_len = (text_len < sizeof(msg.text) - 1) ? text_len : sizeof(msg.text) - 1;
+    memcpy(msg.text, text_val, copy_len);
     msg.text[copy_len] = '\0';
 
-    // Store sender's 8-byte peer ID in the first 8 bytes of the fingerprint field
+    // Store sender peer ID
     memcpy(msg.sender.bitchat_fingerprint, sender_id, BITCHAT_SENDER_ID_LEN);
-    // Format short display name from peer ID
-    snprintf(msg.sender.display_name, sizeof(msg.sender.display_name),
-             "%02x%02x%02x%02x", sender_id[0], sender_id[1], sender_id[2], sender_id[3]);
 
-    Serial.printf("[%s] Received from %s: \"%s\"\n", TAG, msg.sender.display_name, msg.text);
+    // Use nickname if available, otherwise format from peer ID
+    if (nick_val && nick_len > 0) {
+        int n = (nick_len < sizeof(msg.sender.display_name) - 1) ? nick_len : sizeof(msg.sender.display_name) - 1;
+        memcpy(msg.sender.display_name, nick_val, n);
+        msg.sender.display_name[n] = '\0';
+    } else {
+        snprintf(msg.sender.display_name, sizeof(msg.sender.display_name),
+                 "%02x%02x%02x%02x", sender_id[0], sender_id[1], sender_id[2], sender_id[3]);
+    }
+
+    Serial.printf("[%s] From %s: \"%s\"\n", TAG, msg.sender.display_name, msg.text);
 
     if (_on_message) {
         _on_message(msg);
@@ -240,9 +319,11 @@ void BitchatBLE::_process_incoming() {
 }
 
 void BitchatBLE::_scan_for_peers() {
-    // TODO: Use NimBLEScan to find other bitchat devices and connect to
-    // relay messages. This enables multi-hop mesh forwarding.
-    //
-    // Scan for devices advertising BITCHAT_SERVICE_UUID, connect, discover
-    // characteristics, and register for notifications on their TX char.
+    // TODO: Use NimBLEScan to find other bitchat devices advertising
+    // BITCHAT_SERVICE_UUID, connect (lower BLE address initiates),
+    // discover BITCHAT_MSG_CHAR_UUID, subscribe to notifications.
+    // RSSI threshold: BITCHAT_SCAN_RSSI_MIN (-70 dBm)
+    // Max connections: BITCHAT_MAX_CONNECTIONS (4)
+    // Connection race: compare BLE addresses, lower address initiates.
+    // Rate limit: 5s cooldown between attempts.
 }

@@ -72,17 +72,22 @@ ToRadio {
 
 | Detail | Value |
 |--------|-------|
-| Transport | BLE via Nordic UART Service (NUS) |
-| BLE Service UUID | `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` |
-| BLE RX Char (write) | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` |
-| BLE TX Char (notify) | `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` |
+| Transport | BLE GATT (custom service, single characteristic) |
+| BLE Service UUID | `F47B5E2D-4A9E-4C5A-9B3F-8E1D2C3A4B5C` |
+| BLE Msg Char UUID | `A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D` |
+| Char properties | WRITE + WRITE_NR + NOTIFY (single char both directions) |
+| BLE MTU | 512 bytes |
 | Encryption | Noise_XX_25519_ChaChaPoly_SHA256 |
 | Identity | Curve25519 (Noise) + Ed25519 (signatures) |
 | Peer ID | First 8 bytes of SHA-256(Noise static public key) |
 | Packet header | 14 bytes: version(1), type(1), TTL(1), timestamp(8), flags(1), payload_len(2) |
-| Variable fields | sender_id(8B), [recipient_id(8B)], payload, [signature(64B)] |
+| Variable fields | sender_id(8B), [recipient_id(8B)], TLV payload, [signature(64B)] |
+| Payload encoding | TLV: type(1B) + length(1B) + value(NB) |
+| TLV types | NICKNAME=0x01, TEXT=0x05, CHANNEL=0x07, PUBKEY=0x09, etc. |
 | Max hops | 7 (TTL) |
-| Routing | Gossip flooding with Bloom filters |
+| Max connections | 4 simultaneous BLE peers |
+| Scan RSSI threshold | -70 dBm |
+| Routing | Gossip flooding with hash-based dedup (128 entries, 30s TTL) |
 | Padding | PKCS#7-style to 256/512/1024/2048 byte blocks |
 
 **Phase 1 simplification:** The bridge acts as a single bitchat identity.
@@ -212,8 +217,8 @@ All runtime config via `config.h` defines (compile-time for Phase 1):
 
 ## Open Questions
 
-1. **Bitchat BLE service UUIDs** — Not documented in public repos; need to
-   reverse-engineer from the iOS app or ESP32-C6 firmware.
+1. ~~**Bitchat BLE service UUIDs**~~ — RESOLVED: Service UUID `F47B5E2D...`,
+   Msg Char UUID `A1B2C3D4...` (from bitchat-esp32 source).
 2. **Noise handshake on bridge** — Phase 1 may skip encryption and only
    relay plaintext broadcast messages. Phase 2 requires a full Noise
    implementation.
