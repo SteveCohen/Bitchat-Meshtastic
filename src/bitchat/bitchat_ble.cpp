@@ -81,45 +81,44 @@ bool BitchatBLE::send_text(const char *text) {
 
     int text_len = strlen(text);
 
-    // ── Phase 1: Send as raw UTF-8 over BLE notify ──────────
+    // Construct a BitchatPacket for broadcast over BLE NUS.
     //
-    // TODO Phase 2: Properly construct a BitchatPacket with:
-    //   - 13-byte header (version, type=BROADCAST, TTL=7, timestamp, flags, payload_len)
-    //   - Noise encryption (or plaintext broadcast)
-    //   - Bloom filter relay tracking
+    // Bitchat packet format:
+    //   Fixed header (14 bytes):
+    //     [version 1B][type 1B][TTL 1B][timestamp 8B][flags 1B][payload_len 2B]
+    //   Variable fields:
+    //     [sender_id 8B]  (always present — our bridge peer ID)
+    //     [payload ...]   (UTF-8 text content)
     //
-    // For now we send plaintext so the bridge is functional for testing.
-    // The bitchat app may need a compatibility shim to accept unencrypted
-    // broadcast messages, OR we implement the full Noise handshake.
+    // TODO Phase 2: Add Noise encryption, Ed25519 signature, PKCS#7 padding
 
-    // Construct a minimal bitchat-like broadcast packet
-    // Header: [version=1][type=0x01 broadcast][TTL=7][timestamp 4B][flags=0][payload_len 2B]
-    uint8_t packet[BITCHAT_HEADER_LEN + 256];
+    uint8_t packet[BITCHAT_HEADER_LEN + BITCHAT_SENDER_ID_LEN + 256];
     int pos = 0;
 
+    // -- Fixed header (14 bytes) --
     // Version
     packet[pos++] = 0x01;
-    // Type: 0x01 = broadcast text
+    // Type: 0x01 = broadcast text (message)
     packet[pos++] = 0x01;
     // TTL
     packet[pos++] = BITCHAT_MAX_HOPS;
-    // Timestamp (4 bytes, seconds since epoch — use millis/1000 as placeholder)
-    uint32_t ts = millis() / 1000;
-    packet[pos++] = (ts >> 24) & 0xFF;
-    packet[pos++] = (ts >> 16) & 0xFF;
-    packet[pos++] = (ts >> 8) & 0xFF;
-    packet[pos++] = ts & 0xFF;
-    // Flags
-    packet[pos++] = 0x00;
-    // Reserved (3 bytes to reach 13-byte header)
-    packet[pos++] = 0x00;
+    // Timestamp (8 bytes, milliseconds — use millis() as placeholder)
+    uint64_t ts = (uint64_t)millis();
+    for (int i = 7; i >= 0; i--) {
+        packet[pos++] = (ts >> (i * 8)) & 0xFF;
+    }
+    // Flags: 0x00 = no recipient, no signature, not compressed
     packet[pos++] = 0x00;
     // Payload length (2 bytes, big-endian)
-    int payload_len = (text_len < 240) ? text_len : 240;
+    int payload_len = (text_len < 220) ? text_len : 220;
     packet[pos++] = (payload_len >> 8) & 0xFF;
     packet[pos++] = payload_len & 0xFF;
 
-    // Payload
+    // -- Sender ID (8 bytes — first 8 bytes of our fingerprint) --
+    memcpy(packet + pos, _keypair.fingerprint, BITCHAT_SENDER_ID_LEN);
+    pos += BITCHAT_SENDER_ID_LEN;
+
+    // -- Payload (UTF-8 text) --
     memcpy(packet + pos, text, payload_len);
     pos += payload_len;
 
@@ -166,9 +165,21 @@ void BitchatBLE::_start_advertising() {
 }
 
 void BitchatBLE::_process_incoming() {
-    // Parse the received BLE data as a bitchat packet
-    if (_rx_len < BITCHAT_HEADER_LEN) {
-        Serial.printf("[%s] Received runt packet (%d bytes)\n", TAG, _rx_len);
+    // Parse the received BLE data as a bitchat packet.
+    //
+    // Format: [header 14B][sender_id 8B][payload ...][signature 64B if flagged]
+    //
+    // Header layout:
+    //   [0]    version (1B)
+    //   [1]    type (1B)
+    //   [2]    TTL (1B)
+    //   [3-10] timestamp (8B, ms)
+    //   [11]   flags (1B): bit0=hasRecipient, bit1=hasSignature, bit2=isCompressed
+    //   [12-13] payload_len (2B, big-endian)
+
+    int min_size = BITCHAT_HEADER_LEN + BITCHAT_SENDER_ID_LEN;
+    if (_rx_len < min_size) {
+        Serial.printf("[%s] Received runt packet (%d bytes, need %d)\n", TAG, _rx_len, min_size);
         return;
     }
 
@@ -178,18 +189,31 @@ void BitchatBLE::_process_incoming() {
     // uint8_t version = pkt[0];
     uint8_t type = pkt[1];
     // uint8_t ttl = pkt[2];
-    // uint32_t timestamp = (pkt[3]<<24) | (pkt[4]<<16) | (pkt[5]<<8) | pkt[6];
-    // uint8_t flags = pkt[7];
-    uint16_t payload_len = (pkt[11] << 8) | pkt[12];
+    // timestamp at pkt[3..10]
+    uint8_t flags = pkt[11];
+    uint16_t payload_len = (pkt[12] << 8) | pkt[13];
 
-    if (BITCHAT_HEADER_LEN + payload_len > _rx_len) {
-        Serial.printf("[%s] Truncated packet\n", TAG);
+    // Calculate variable field offsets
+    int offset = BITCHAT_HEADER_LEN;
+
+    // Sender ID (always present)
+    const uint8_t *sender_id = pkt + offset;
+    offset += BITCHAT_SENDER_ID_LEN;
+
+    // Recipient ID (8 bytes, if hasRecipient flag)
+    if (flags & 0x01) {
+        offset += 8; // skip recipient ID
+    }
+
+    // Payload starts here
+    if (offset + payload_len > _rx_len) {
+        Serial.printf("[%s] Truncated packet (need %d, have %d)\n", TAG, offset + payload_len, _rx_len);
         return;
     }
 
     // Only handle broadcast text for now
     if (type != 0x01) {
-        Serial.printf("[%s] Ignoring non-broadcast packet type 0x%02x\n", TAG, type);
+        Serial.printf("[%s] Ignoring packet type 0x%02x\n", TAG, type);
         return;
     }
 
@@ -199,14 +223,16 @@ void BitchatBLE::_process_incoming() {
     msg.timestamp_ms = millis();
 
     int copy_len = (payload_len < sizeof(msg.text) - 1) ? payload_len : sizeof(msg.text) - 1;
-    memcpy(msg.text, pkt + BITCHAT_HEADER_LEN, copy_len);
+    memcpy(msg.text, pkt + offset, copy_len);
     msg.text[copy_len] = '\0';
 
-    // TODO Phase 2: Extract sender fingerprint from Noise session or packet header
-    // For now, sender is unknown
-    snprintf(msg.sender.display_name, sizeof(msg.sender.display_name), "ble_peer");
+    // Store sender's 8-byte peer ID in the first 8 bytes of the fingerprint field
+    memcpy(msg.sender.bitchat_fingerprint, sender_id, BITCHAT_SENDER_ID_LEN);
+    // Format short display name from peer ID
+    snprintf(msg.sender.display_name, sizeof(msg.sender.display_name),
+             "%02x%02x%02x%02x", sender_id[0], sender_id[1], sender_id[2], sender_id[3]);
 
-    Serial.printf("[%s] Received: \"%s\"\n", TAG, msg.text);
+    Serial.printf("[%s] Received from %s: \"%s\"\n", TAG, msg.sender.display_name, msg.text);
 
     if (_on_message) {
         _on_message(msg);

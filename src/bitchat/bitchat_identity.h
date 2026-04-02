@@ -9,6 +9,8 @@
 //   2. Ed25519   (for message signing — authentication)
 //
 // The user's fingerprint = SHA-256(noise_static_public_key)
+// The peer ID = first 8 bytes of the fingerprint (used in packet headers)
+// Broadcast ID = 0xFFFFFFFFFFFFFFFF
 //
 // Phase 1: The bridge uses a single keypair for all bridged messages.
 // Phase 2: The bridge maintains per-Meshtastic-user virtual identities.
@@ -18,7 +20,7 @@ struct BitchatKeypair {
     uint8_t noise_public[32];    // Curve25519 public key
     uint8_t sign_private[64];    // Ed25519 private key (64 bytes: seed + public)
     uint8_t sign_public[32];     // Ed25519 public key
-    uint8_t fingerprint[32];     // SHA-256(noise_public)
+    uint8_t fingerprint[32];     // SHA-256(noise_public) — first 8 bytes = peer ID
 };
 
 // Generate or load the bridge's own bitchat identity.

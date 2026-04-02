@@ -72,14 +72,18 @@ ToRadio {
 
 | Detail | Value |
 |--------|-------|
-| Transport | BLE (GATT server + scanner) |
-| Protocol | Bitchat packet format |
+| Transport | BLE via Nordic UART Service (NUS) |
+| BLE Service UUID | `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` |
+| BLE RX Char (write) | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` |
+| BLE TX Char (notify) | `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` |
 | Encryption | Noise_XX_25519_ChaChaPoly_SHA256 |
 | Identity | Curve25519 (Noise) + Ed25519 (signatures) |
-| Fingerprint | SHA-256 of Noise static public key |
-| Packet header | 13 bytes: version, type, TTL, timestamp, flags, payload_len |
+| Peer ID | First 8 bytes of SHA-256(Noise static public key) |
+| Packet header | 14 bytes: version(1), type(1), TTL(1), timestamp(8), flags(1), payload_len(2) |
+| Variable fields | sender_id(8B), [recipient_id(8B)], payload, [signature(64B)] |
 | Max hops | 7 (TTL) |
 | Routing | Gossip flooding with Bloom filters |
+| Padding | PKCS#7-style to 256/512/1024/2048 byte blocks |
 
 **Phase 1 simplification:** The bridge acts as a single bitchat identity.
 All Meshtastic messages appear to come from "Bridge" on the bitchat side.
