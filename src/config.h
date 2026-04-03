@@ -28,7 +28,9 @@
 
 // ── Bitchat protocol constants ────────────────────────
 #define BITCHAT_MAX_HOPS      7
-#define BITCHAT_HEADER_LEN    14     // version(1)+type(1)+TTL(1)+timestamp(8)+flags(1)+payload_len(2)
+#define BITCHAT_HEADER_V1_LEN 14     // version(1)+type(1)+TTL(1)+timestamp(8)+flags(1)+payload_len(2)
+#define BITCHAT_HEADER_V2_LEN 16     // version(1)+type(1)+TTL(1)+timestamp(8)+flags(1)+payload_len(4)
+#define BITCHAT_HEADER_LEN    14     // default (v1) for outgoing packets
 #define BITCHAT_SENDER_ID_LEN 8     // 8-byte peer ID (truncated SHA-256 of Noise pubkey)
 // Bitchat BLE uses a custom service with a SINGLE characteristic for both directions
 // (write to send, notify to receive)
@@ -76,6 +78,14 @@
 #define BITCHAT_MAX_TEXT_LEN        100
 #define BITCHAT_MSG_CACHE_SIZE      128
 #define BITCHAT_MSG_CACHE_TTL_MS    (30 * 1000)
+
+// ── Fragmentation ─────────────────────────────────────
+// Fragment header inside PKT_FRAGMENT payload:
+//   msg_id(4, random) + frag_idx(1) + total_frags(1) + chunk_data(N)
+#define BITCHAT_FRAG_HEADER_LEN  6
+#define BITCHAT_MAX_FRAGMENTS    8   // Max fragments per message
+#define BITCHAT_FRAG_REASSEMBLY  4   // Concurrent reassembly slots
+#define BITCHAT_FRAG_TIMEOUT_MS  (10 * 1000)  // 10s reassembly timeout
 
 // ── Deduplication ─────────────────────────────────────
 #define DEDUP_CACHE_SIZE   64       // Ring buffer of recent message hashes

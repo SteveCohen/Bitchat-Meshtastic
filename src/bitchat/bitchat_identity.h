@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include "noise_state.h"
+#include "ed25519.h"
 #include <nvs_flash.h>
 #include <nvs.h>
 
@@ -11,20 +12,17 @@
 //
 // Each bitchat node has a persistent keypair:
 //   noise_private[32] / noise_public[32]  — Curve25519 for Noise XX
+//   sign_private[64] / sign_public[32]     — Ed25519 for packet signing
 //   fingerprint[32]                        — SHA-256(noise_public)
 //   peer_id = fingerprint[0..7]            — 8-byte ID in packet headers
-//
-// Ed25519 signing is omitted for Phase 1 (BITCHAT_FLAG_HAS_SIGNATURE
-// is not set on outgoing messages). Receiving peers may not verify
-// signatures from unknown peers anyway.
 //
 // Keys are persisted in NVS under namespace "bc", key "kp".
 
 struct BitchatKeypair {
     uint8_t noise_private[32];  // Curve25519 private key (little-endian)
     uint8_t noise_public[32];   // Curve25519 public key  (little-endian)
-    uint8_t sign_private[64];   // Ed25519 private key — reserved, zeroed Phase 1
-    uint8_t sign_public[32];    // Ed25519 public key  — reserved, zeroed Phase 1
+    uint8_t sign_private[64];   // Ed25519 private key (seed || public, NaCl format)
+    uint8_t sign_public[32];    // Ed25519 public key (compressed Edwards point)
     uint8_t fingerprint[32];    // SHA-256(noise_public); peer_id = first 8 bytes
 };
 
@@ -61,6 +59,14 @@ generate:
     memset(kp, 0, sizeof(BitchatKeypair));
     if (noise_gen_keypair(kp->noise_private, kp->noise_public) != 0) {
         return false;
+    }
+
+    // Generate Ed25519 signing keypair from random seed
+    {
+        uint8_t seed[32];
+        esp_fill_random(seed, 32);
+        ed25519_create_keypair(seed, kp->sign_public, kp->sign_private);
+        memset(seed, 0, sizeof(seed));
     }
 
     // fingerprint = SHA-256(noise_public)

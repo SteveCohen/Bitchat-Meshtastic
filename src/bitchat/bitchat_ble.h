@@ -73,6 +73,15 @@ public:
 private:
     uint32_t _last_scan_ms = 0;
 
+    // Relay dedup cache — prevents re-forwarding packets we've already seen
+    struct RelayDedupEntry { uint32_t hash; uint32_t timestamp_ms; };
+    static constexpr int RELAY_DEDUP_SIZE = 64;
+    RelayDedupEntry _relay_dedup[RELAY_DEDUP_SIZE] = {};
+    int             _relay_dedup_idx = 0;
+    uint32_t _relay_hash(const uint8_t *pkt, int pkt_len) const;
+    bool     _relay_is_dup(uint32_t h) const;
+    void     _relay_record(uint32_t h);
+
     // ── Private methods ───────────────────────────────────────────────
 
     void _init_ble_server();
@@ -90,7 +99,7 @@ private:
     void _handle_message(PeerSession *peer, const uint8_t *payload, int payload_len,
                          const uint8_t *sender_id, uint8_t flags);
     void _handle_noise_handshake(PeerSession *peer, const uint8_t *payload, int payload_len);
-    void _handle_encrypted(PeerSession *peer, const uint8_t *pkt, int pkt_len,
+    void _handle_encrypted(PeerSession *peer, const uint8_t *pkt, int hdr_len,
                             const uint8_t *ciphertext, int ct_len);
 
     // Build and send a bitchat packet (broadcast to all via peripheral notify)
@@ -102,11 +111,34 @@ private:
     // Build and send a PKT_NOISE_HANDSHAKE to a specific peer
     void _send_handshake_packet(PeerSession *peer, const uint8_t *payload, size_t payload_len);
 
+    // Build and send a PKT_NOISE_ENCRYPTED to a specific peer
+    void _send_encrypted(PeerSession *peer, uint8_t noise_type,
+                         const uint8_t *inner, size_t inner_len);
+
     // Build and send an announce packet (type 0x01) to a specific peer
     void _send_announce(PeerSession *peer);
 
     // Relay/gossip: forward a packet to all peers except the sender
     void _relay_packet(const uint8_t *pkt, int pkt_len, uint16_t except_handle);
+
+    // Fragmentation: split oversized packets and reassemble incoming fragments
+    void _send_fragmented(PeerSession *peer, const uint8_t *pkt, int pkt_len);
+    void _handle_fragment(PeerSession *peer, const uint8_t *payload, int payload_len,
+                          uint16_t conn_handle);
+
+    // Fragment reassembly slots
+    struct FragReassembly {
+        bool     active = false;
+        uint32_t msg_id = 0;
+        uint16_t conn_handle = 0;
+        uint8_t  total_frags = 0;
+        uint8_t  received_mask = 0;  // bitmask of received fragments
+        uint32_t start_ms = 0;
+        uint8_t  data[2048] = {};
+        int      frag_offsets[BITCHAT_MAX_FRAGMENTS] = {};
+        int      frag_lengths[BITCHAT_MAX_FRAGMENTS] = {};
+    };
+    FragReassembly _frag_slots[BITCHAT_FRAG_REASSEMBLY] = {};
 
     // Peer session management
     PeerSession *_find_peer(uint16_t conn_handle);
