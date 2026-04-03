@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <esp_random.h>
 #include "../config.h"
 
 // ── Minimal hand-rolled protobuf encoder/decoder ─────────────────────

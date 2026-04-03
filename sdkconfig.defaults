@@ -1,0 +1,15 @@
+# ESP32-S3 sdkconfig overrides for Meshtastic-Bitchat bridge
+#
+# BLE (NimBLE) + WiFi run concurrently — give them adequate stack/heap.
+
+# NimBLE host task stack (default 4096 is tight with BLE + crypto later)
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
+
+# Allow up to 4 simultaneous BLE connections (bitchat default)
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
+
+# Increase ATT MTU to match BITCHAT_BLE_MTU (512)
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
+
+# Main app task stack (default 8192 — keep or increase)
+CONFIG_ARDUINO_LOOP_STACK_SIZE=8192

@@ -145,7 +145,8 @@ bool BitchatBLE::send_text(const char *text) {
     // TLV payload for a broadcast text message:
     //   [TLV_NICKNAME][TLV_TEXT]
 
-    uint8_t packet[2048];
+    // Static buffer — avoids 2048-byte stack allocation on BLE task
+    static uint8_t packet[2048];
     int pos = 0;
 
     // -- Fixed header (14 bytes) --
@@ -203,7 +204,7 @@ bool BitchatBLE::send_text(const char *text) {
 
 void BitchatBLE::_init_ble_server() {
     NimBLEDevice::init(BRIDGE_NAME);
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+    NimBLEDevice::setPower(9);   // +9 dBm — max for ESP32-S3
     NimBLEDevice::setMTU(BITCHAT_BLE_MTU);
 
     _server = NimBLEDevice::createServer();
