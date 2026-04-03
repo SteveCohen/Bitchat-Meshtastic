@@ -1,46 +1,87 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include "noise_state.h"
+#include <nvs_flash.h>
+#include <nvs.h>
 
-// ── Bitchat Identity Stubs ───────────────────────────────────────────
+// ── Bitchat identity ─────────────────────────────────────────────────
 //
-// Bitchat uses two key pairs per user:
-//   1. Curve25519 (for Noise_XX handshake — encryption)
-//   2. Ed25519   (for message signing — authentication)
+// Each bitchat node has a persistent keypair:
+//   noise_private[32] / noise_public[32]  — Curve25519 for Noise XX
+//   fingerprint[32]                        — SHA-256(noise_public)
+//   peer_id = fingerprint[0..7]            — 8-byte ID in packet headers
 //
-// The user's fingerprint = SHA-256(noise_static_public_key)
-// The peer ID = first 8 bytes of the fingerprint (used in packet headers)
-// Broadcast ID = 0xFFFFFFFFFFFFFFFF
+// Ed25519 signing is omitted for Phase 1 (BITCHAT_FLAG_HAS_SIGNATURE
+// is not set on outgoing messages). Receiving peers may not verify
+// signatures from unknown peers anyway.
 //
-// Phase 1: The bridge uses a single keypair for all bridged messages.
-// Phase 2: The bridge maintains per-Meshtastic-user virtual identities.
+// Keys are persisted in NVS under namespace "bc", key "kp".
 
 struct BitchatKeypair {
-    uint8_t noise_private[32];   // Curve25519 private key
-    uint8_t noise_public[32];    // Curve25519 public key
-    uint8_t sign_private[64];    // Ed25519 private key (64 bytes: seed + public)
-    uint8_t sign_public[32];     // Ed25519 public key
-    uint8_t fingerprint[32];     // SHA-256(noise_public) — first 8 bytes = peer ID
+    uint8_t noise_private[32];  // Curve25519 private key (little-endian)
+    uint8_t noise_public[32];   // Curve25519 public key  (little-endian)
+    uint8_t sign_private[64];   // Ed25519 private key — reserved, zeroed Phase 1
+    uint8_t sign_public[32];    // Ed25519 public key  — reserved, zeroed Phase 1
+    uint8_t fingerprint[32];    // SHA-256(noise_public); peer_id = first 8 bytes
 };
 
-// Generate or load the bridge's own bitchat identity.
-// Phase 1: generates a random keypair on first boot and stores in NVS.
-// Returns true on success.
+// Generate or load the bridge's bitchat identity.
+// Returns true on success. Safe to call multiple times (idempotent NVS init).
 inline bool bitchat_identity_init(BitchatKeypair *kp) {
-    // TODO: implement actual key generation using:
-    //   - mbedtls_ecp_gen_keypair() for Curve25519
-    //   - mbedtls_pk_generate_key() or sodium for Ed25519
-    //   - mbedtls_sha256() for fingerprint
-    //   - NVS for persistence
-    //
-    // For now, fill with deterministic placeholder so the bridge can run
+    // Ensure NVS is initialised (safe to call multiple times)
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    if (err != ESP_OK) {
+        // NVS unavailable — generate ephemeral keys (lost on reboot)
+        goto generate;
+    }
+
+    {
+        nvs_handle_t h;
+        err = nvs_open("bc", NVS_READWRITE, &h);
+        if (err == ESP_OK) {
+            size_t sz = sizeof(BitchatKeypair);
+            esp_err_t lerr = nvs_get_blob(h, "kp", kp, &sz);
+            nvs_close(h);
+            if (lerr == ESP_OK && sz == sizeof(BitchatKeypair)) {
+                // Loaded successfully
+                return true;
+            }
+        }
+    }
+
+generate:
+    // Generate a fresh Curve25519 keypair
     memset(kp, 0, sizeof(BitchatKeypair));
-    // Mark as placeholder
-    kp->fingerprint[0] = 0xBB; // "Bridge Bitchat"
+    if (noise_gen_keypair(kp->noise_private, kp->noise_public) != 0) {
+        return false;
+    }
+
+    // fingerprint = SHA-256(noise_public)
+    if (noise_sha256(kp->noise_public, 32, kp->fingerprint) != 0) {
+        return false;
+    }
+
+    // Persist to NVS
+    {
+        nvs_handle_t h;
+        if (nvs_open("bc", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_blob(h, "kp", kp, sizeof(BitchatKeypair));
+            nvs_commit(h);
+            nvs_close(h);
+        }
+    }
+
     return true;
 }
 
-// Format a fingerprint as a short hex string (first 4 bytes).
+// Format the first 4 bytes of fingerprint as hex (8 chars + NUL).
 inline void bitchat_fingerprint_short(const uint8_t fp[32], char *out, int out_len) {
     snprintf(out, out_len, "%02x%02x%02x%02x", fp[0], fp[1], fp[2], fp[3]);
 }
