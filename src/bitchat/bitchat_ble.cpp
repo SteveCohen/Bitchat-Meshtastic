@@ -177,7 +177,8 @@ void BitchatBLE::_start_advertising() {
 
 // ── BLE scanning (central role) ──────────────────────────────────────
 
-class BitchatBLEScanCallbacks : public NimBLEScanCallbacks {
+// NimBLE 1.4 uses NimBLEAdvertisedDeviceCallbacks (not NimBLEScanCallbacks)
+class BitchatBLEScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
 public:
     BitchatBLEScanCallbacks(BitchatBLE *p) : _p(p) {}
 
@@ -185,27 +186,30 @@ public:
         _p->_on_scan_result(dev);
     }
 
-    void onScanEnd(NimBLEScanResults results) override {
-        _p->_scanning = false;
-    }
-
 private:
     BitchatBLE *_p;
 };
 
+// Scan-complete callback (free function for NimBLE 1.4 API)
+static BitchatBLE *_g_ble_instance = nullptr;
+static void _scan_complete_cb(NimBLEScanResults results) {
+    if (_g_ble_instance) _g_ble_instance->_scanning = false;
+}
+
 void BitchatBLE::_start_scanning() {
     if (_scanning) return;
+
+    _g_ble_instance = this;  // for scan-complete callback
 
     NimBLEScan *scan = NimBLEDevice::getScan();
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(80);
-    scan->setScanCallbacks(new BitchatBLEScanCallbacks(this), false);
-    scan->setFilterPolicy(BLE_HCI_SCAN_FILT_NO_WL);
+    scan->setAdvertisedDeviceCallbacks(new BitchatBLEScanCallbacks(this), false);
 
     _scanning = true;
     _last_scan_ms = millis();
-    scan->start(10, false);  // 10 seconds, non-blocking
+    scan->start(10, _scan_complete_cb, false);  // 10s, non-blocking with callback
     Serial.printf("[%s] Scanning for bitchat peers...\n", TAG);
 }
 
@@ -243,8 +247,7 @@ void BitchatBLE::_connect_to_peripheral(NimBLEAdvertisedDevice *dev) {
         return;
     }
 
-    // Negotiate MTU
-    client->setMTU(BITCHAT_BLE_MTU);
+    // MTU is set globally via NimBLEDevice::setMTU() in _init_ble_server()
 
     // Discover the bitchat service and characteristic
     NimBLERemoteService *svc = client->getService(BITCHAT_SERVICE_UUID);
@@ -263,7 +266,21 @@ void BitchatBLE::_connect_to_peripheral(NimBLEAdvertisedDevice *dev) {
         return;
     }
 
-    // Subscribe to notifications (incoming packets from peer)
+    uint16_t handle = client->getConnId();
+    uint8_t addr_bytes[6];
+    memcpy(addr_bytes, dev->getAddress().getNative(), 6);
+
+    // Register peer session BEFORE subscribing (so notify callback can find it)
+    _on_connect(handle, addr_bytes, /*we_are_central=*/true);
+
+    PeerSession *peer = _find_peer(handle);
+    if (peer) {
+        peer->client     = client;
+        peer->remote_chr = chr;
+    }
+
+    // Subscribe to notifications (incoming packets from peer).
+    // NimBLE 1.4 notify_callback: void(NimBLERemoteCharacteristic*, uint8_t*, size_t, bool)
     if (chr->canNotify()) {
         chr->subscribe(true, [this](NimBLERemoteCharacteristic *c,
                                      uint8_t *data, size_t length, bool isNotify) {
@@ -274,20 +291,6 @@ void BitchatBLE::_connect_to_peripheral(NimBLEAdvertisedDevice *dev) {
                 _rx_ready       = true;
             }
         });
-    }
-
-    uint16_t handle = client->getConnId();
-    uint8_t addr_bytes[6];
-    memcpy(addr_bytes, dev->getAddress().getNative(), 6);
-
-    // We connected to them → we are central
-    _on_connect(handle, addr_bytes, /*we_are_central=*/true);
-
-    // Store client pointers in peer session
-    PeerSession *peer = _find_peer(handle);
-    if (peer) {
-        peer->client     = client;
-        peer->remote_chr = chr;
     }
 
     Serial.printf("[%s] Connected to peripheral %s, handle=%d\n", TAG,
@@ -353,12 +356,15 @@ void BitchatBLE::_send_packet(uint8_t type, uint8_t flags,
 
 void BitchatBLE::_send_to_peer(PeerSession *peer, const uint8_t *data, int len) {
     if (peer->we_are_central && peer->remote_chr) {
-        // We are central: write to remote characteristic
+        // We are central: write to remote peripheral's characteristic (unicast)
         peer->remote_chr->writeValue(data, len, false);  // write without response
     } else if (_msg_char) {
-        // We are peripheral: notify this specific connection
+        // We are peripheral: notify sends to ALL subscribed centrals.
+        // NimBLE 1.4 has no per-connection notify — this is acceptable because:
+        // - Handshake messages in wrong state are silently ignored by the peer
+        // - The iOS app has one central connection per peripheral typically
         _msg_char->setValue(data, len);
-        _msg_char->notify(peer->conn_handle);
+        _msg_char->notify();
     }
 }
 

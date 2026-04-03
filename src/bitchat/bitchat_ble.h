@@ -67,8 +67,10 @@ private:
     volatile bool    _rx_ready            = false;
     volatile uint16_t _rx_conn_handle     = 0;
 
-    // Scanning state
+public:
+    // Scanning state (public for scan-complete free function callback)
     bool     _scanning     = false;
+private:
     uint32_t _last_scan_ms = 0;
 
     // ── Private methods ───────────────────────────────────────────────
