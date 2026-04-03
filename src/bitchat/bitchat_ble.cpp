@@ -201,8 +201,27 @@ void BitchatBLE::_send_packet(uint8_t type, uint8_t flags,
     _msg_char->notify();
 }
 
-void BitchatBLE::_send_handshake_packet(const uint8_t *tlv_payload, size_t tlv_len) {
-    _send_packet(BITCHAT_PKT_NOISE_HANDSHAKE, 0x00, tlv_payload, (uint16_t)tlv_len);
+void BitchatBLE::_send_handshake_packet(uint16_t conn_handle,
+                                         const uint8_t *tlv_payload, size_t tlv_len) {
+    static uint8_t packet[512];
+    int pos = 0;
+
+    packet[pos++] = 0x01;                        // version
+    packet[pos++] = BITCHAT_PKT_NOISE_HANDSHAKE;
+    packet[pos++] = BITCHAT_MAX_HOPS;
+    uint64_t ts = (uint64_t)millis();
+    for (int i = 7; i >= 0; i--) packet[pos++] = (ts >> (i * 8)) & 0xFF;
+    packet[pos++] = 0x00;                        // flags
+    packet[pos++] = ((uint16_t)tlv_len >> 8) & 0xFF;
+    packet[pos++] =  (uint16_t)tlv_len       & 0xFF;
+    memcpy(packet + pos, _keypair.fingerprint, BITCHAT_SENDER_ID_LEN);
+    pos += BITCHAT_SENDER_ID_LEN;
+    memcpy(packet + pos, tlv_payload, tlv_len);
+    pos += (int)tlv_len;
+
+    // Send only to the specific peer — handshake messages are unicast
+    _msg_char->setValue(packet, pos);
+    _msg_char->notify(conn_handle);
 }
 
 // ── _process_incoming ─────────────────────────────────────────────────
@@ -314,7 +333,7 @@ void BitchatBLE::_handle_noise_handshake(PeerSession *peer,
             Serial.printf("[%s] Received msg1, responding...\n", TAG);
             ret = noise_hs_read_msg1_write_msg2(&peer->hs, payload, payload_len,
                                                  out, &out_len);
-            if (ret == 0) _send_handshake_packet(out, out_len);
+            if (ret == 0) _send_handshake_packet(peer->conn_handle, out, out_len);
             break;
 
         case NOISE_HS_AWAIT_MSG2:
@@ -322,7 +341,7 @@ void BitchatBLE::_handle_noise_handshake(PeerSession *peer,
             Serial.printf("[%s] Received msg2, sending msg3...\n", TAG);
             ret = noise_hs_read_msg2_write_msg3(&peer->hs, payload, payload_len,
                                                  out, &out_len);
-            if (ret == 0) _send_handshake_packet(out, out_len);
+            if (ret == 0) _send_handshake_packet(peer->conn_handle, out, out_len);
             break;
 
         case NOISE_HS_AWAIT_MSG3:
@@ -438,7 +457,7 @@ void BitchatBLE::_on_connect(uint16_t handle, const uint8_t *addr) {
     if (we_initiate) {
         uint8_t out[256]; size_t out_len = 0;
         if (noise_hs_write_msg1(&peer->hs, out, &out_len) == 0) {
-            _send_handshake_packet(out, out_len);
+            _send_handshake_packet(handle, out, out_len);
         }
     }
 }

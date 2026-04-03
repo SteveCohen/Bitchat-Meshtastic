@@ -78,8 +78,9 @@ private:
     // Build and send a bitchat packet
     void _send_packet(uint8_t type, uint8_t flags, const uint8_t *payload, uint16_t payload_len);
 
-    // Build and send a PKT_NOISE_HANDSHAKE packet with given TLV payload
-    void _send_handshake_packet(const uint8_t *tlv_payload, size_t tlv_len);
+    // Build and send a PKT_NOISE_HANDSHAKE packet to a specific peer (unicast)
+    void _send_handshake_packet(uint16_t conn_handle,
+                                const uint8_t *tlv_payload, size_t tlv_len);
 
     // Peer session management
     PeerSession *_find_peer(uint16_t conn_handle);

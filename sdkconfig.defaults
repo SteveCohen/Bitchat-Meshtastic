@@ -13,3 +13,9 @@ CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
 
 # Main app task stack (default 8192 — keep or increase)
 CONFIG_ARDUINO_LOOP_STACK_SIZE=8192
+
+# mbedtls: enable ChaCha20-Poly1305 AEAD (required for Noise ChaChaPoly)
+CONFIG_MBEDTLS_CHACHAPOLY_C=y
+
+# mbedtls: enable HKDF (required for Noise MixKey / Split)
+CONFIG_MBEDTLS_HKDF_C=y
