@@ -185,12 +185,35 @@ void MeshtasticTCP::_handle_from_radio(const uint8_t *buf, int len) {
     if (!_config_complete) {
         if (mesh_proto::is_config_complete(buf, len, _config_nonce)) {
             _config_complete = true;
-            Serial.printf("[%s] Config complete\n", TAG);
+            Serial.printf("[%s] Config complete, my_node=%08x\n", TAG, _my_node_id);
             return;
         }
-        // During config phase, also look for my_info to get our node ID
-        // my_info is field 3 in FromRadio; we could parse it, but for now
-        // we just wait for config_complete
+        // During config phase, look for my_info (field 3) to get our node ID.
+        // FromRadio { my_info: field 3 (MyNodeInfo) }
+        // MyNodeInfo { my_node_num: field 1 (fixed32) }
+        int pos = 0;
+        while (pos < len) {
+            mesh_proto::ProtoField f;
+            int consumed = mesh_proto::decode_field(buf + pos, len - pos, &f);
+            if (consumed < 0) break;
+            pos += consumed;
+            if (f.field_num == 3 && f.wire_type == 2) {
+                // Parse MyNodeInfo submessage for my_node_num (field 1, fixed32)
+                const uint8_t *mi = f.bytes_val.data;
+                int mi_len = f.bytes_val.len;
+                int mi_pos = 0;
+                while (mi_pos < mi_len) {
+                    mesh_proto::ProtoField mf;
+                    int mc = mesh_proto::decode_field(mi + mi_pos, mi_len - mi_pos, &mf);
+                    if (mc < 0) break;
+                    mi_pos += mc;
+                    if (mf.field_num == 1 && mf.wire_type == 5) {
+                        _my_node_id = mf.fixed32_val;
+                        Serial.printf("[%s] Got my_node_num: %08x\n", TAG, _my_node_id);
+                    }
+                }
+            }
+        }
         return;
     }
 

@@ -66,13 +66,17 @@ static inline int _sha256(const uint8_t *data, size_t len, uint8_t out[32]) {
 
 // ── Symmetric state primitives ────────────────────────────────────────
 
-// Initialize SymmetricState: ck = h = NOISE_PROTO_NAME (exactly 32 bytes)
+// Initialize SymmetricState: ck = h = NOISE_PROTO_NAME (exactly 32 bytes),
+// then MixHash(prologue). The iOS app always calls MixHash(prologue) even
+// with empty prologue, which changes h from raw protocol name to SHA256(h).
 static inline int noise_ss_init(NoiseSymmetricState *ss) {
     memcpy(ss->ck, NOISE_PROTO_NAME, 32);
     memcpy(ss->h,  NOISE_PROTO_NAME, 32);
     memset(ss->k, 0, 32);
     ss->n       = 0;
     ss->has_key = false;
+    // MixHash(empty prologue) — matches iOS app's mixPreMessageKeys()
+    noise_mix_hash(ss, (const uint8_t *)"", 0);
     return 0;
 }
 

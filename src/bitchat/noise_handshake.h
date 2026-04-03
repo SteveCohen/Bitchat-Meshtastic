@@ -61,21 +61,23 @@ struct NoiseHandshakeState {
 int noise_hs_init(NoiseHandshakeState *hs, NoiseRole role,
                   const uint8_t *s_priv, const uint8_t *s_pub);
 
-// Initiator → Responder: build message 1 TLV payload.
-// out receives the raw TLV bytes to embed in a PKT_NOISE_HANDSHAKE packet.
+// Initiator → Responder: build message 1 (raw bytes).
+// out receives e_pub[32]. These go directly into the PKT_NOISE_HANDSHAKE payload.
 int noise_hs_write_msg1(NoiseHandshakeState *hs, uint8_t *out, size_t *out_len);
 
-// Responder: consume message 1, produce message 2 TLV payload.
+// Responder: consume message 1 (32B), produce message 2 (80B raw).
+// msg2 = e_pub[32] + EncryptAndHash(s_pub)[32+16]
 int noise_hs_read_msg1_write_msg2(NoiseHandshakeState *hs,
                                    const uint8_t *msg1, size_t msg1_len,
                                    uint8_t *out, size_t *out_len);
 
-// Initiator: consume message 2, produce message 3 TLV payload.
+// Initiator: consume message 2 (80B), produce message 3 (48B raw).
+// msg3 = EncryptAndHash(s_pub)[32+16]
 int noise_hs_read_msg2_write_msg3(NoiseHandshakeState *hs,
                                    const uint8_t *msg2, size_t msg2_len,
                                    uint8_t *out, size_t *out_len);
 
-// Responder: consume message 3 and finalise.
+// Responder: consume message 3 (48B) and finalise.
 // On success, hs->phase == NOISE_HS_TRANSPORT.
 int noise_hs_read_msg3(NoiseHandshakeState *hs,
                         const uint8_t *msg3, size_t msg3_len);

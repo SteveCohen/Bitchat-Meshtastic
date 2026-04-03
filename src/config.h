@@ -35,13 +35,14 @@
 #define BITCHAT_SERVICE_UUID        "F47B5E2D-4A9E-4C5A-9B3F-8E1D2C3A4B5C"
 #define BITCHAT_MSG_CHAR_UUID       "A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D"
 
-// ── Bitchat packet types ──────────────────────────────
-#define BITCHAT_PKT_MESSAGE         0x01
-#define BITCHAT_PKT_DELIVERY_ACK    0x02
-#define BITCHAT_PKT_READ_RECEIPT    0x03
-#define BITCHAT_PKT_NOISE_HANDSHAKE 0x10
-#define BITCHAT_PKT_NOISE_ENCRYPTED 0x11
-#define BITCHAT_PKT_FRAGMENT        0x20
+// ── Bitchat packet types (matches iOS permissionlesstech/bitchat) ──
+#define BITCHAT_PKT_ANNOUNCE        0x01  // Identity/presence broadcast
+#define BITCHAT_PKT_MESSAGE         0x02  // Public/channel text message
+#define BITCHAT_PKT_LEAVE           0x03  // Peer departure
+#define BITCHAT_PKT_NOISE_HANDSHAKE 0x10  // Noise XX handshake (raw bytes)
+#define BITCHAT_PKT_NOISE_ENCRYPTED 0x11  // Encrypted payload (NoisePayload)
+#define BITCHAT_PKT_FRAGMENT        0x20  // Message fragment
+#define BITCHAT_PKT_REQUEST_SYNC    0x21  // Sync request
 
 // ── Bitchat packet flags ──────────────────────────────
 #define BITCHAT_FLAG_HAS_RECIPIENT  0x01
@@ -50,16 +51,23 @@
 #define BITCHAT_FLAG_IS_RELAY       0x08
 #define BITCHAT_FLAG_IS_PRIVATE     0x10
 
-// ── Bitchat TLV types (payload encoding) ──────────────
-#define BITCHAT_TLV_NICKNAME        0x01
-#define BITCHAT_TLV_NOISE_INIT      0x02
-#define BITCHAT_TLV_NOISE_RESP      0x03
-#define BITCHAT_TLV_NOISE_FINISH    0x04
-#define BITCHAT_TLV_TEXT            0x05
-#define BITCHAT_TLV_ENCRYPTED       0x06
-#define BITCHAT_TLV_CHANNEL         0x07
-#define BITCHAT_TLV_GEOHASH         0x08
-#define BITCHAT_TLV_PUBKEY          0x09
+// ── Bitchat TLV types for ANNOUNCE packets (0x01) ─────
+#define BITCHAT_TLV_NICKNAME        0x01  // UTF-8 display name
+#define BITCHAT_TLV_NOISE_PUBKEY    0x02  // Curve25519 static public key (32 bytes)
+#define BITCHAT_TLV_SIGNING_PUBKEY  0x03  // Ed25519 signing public key (32 bytes)
+#define BITCHAT_TLV_NEIGHBORS       0x04  // Direct neighbor peer IDs (N * 8 bytes)
+
+// ── Bitchat TLV types for MESSAGE packets (0x02) ──────
+#define BITCHAT_TLV_TEXT            0x05  // UTF-8 text content
+#define BITCHAT_TLV_CHANNEL         0x07  // Channel identifier
+#define BITCHAT_TLV_GEOHASH         0x08  // Location geohash
+
+// ── NoisePayload types (inside decrypted 0x11 packets) ─
+#define NOISE_PAYLOAD_PRIVATE_MSG   0x01  // Private message
+#define NOISE_PAYLOAD_READ_RECEIPT  0x02  // Read receipt
+#define NOISE_PAYLOAD_DELIVERED     0x03  // Delivery confirmation
+#define NOISE_PAYLOAD_VERIFY_CHAL   0x10  // Verification challenge
+#define NOISE_PAYLOAD_VERIFY_RESP   0x11  // Verification response
 
 // ── Bitchat BLE parameters ───────────────────────────
 #define BITCHAT_MAX_CONNECTIONS     4
