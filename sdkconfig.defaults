@@ -33,3 +33,7 @@ CONFIG_MBEDTLS_HKDF_C=y
 
 # mbedtls: enable Curve25519 (required for Noise DH)
 CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=y
+
+# WiFi/BLE coexistence: prevent one radio from starving the other
+CONFIG_ESP32_WIFI_SW_COEXIST_ENABLE=y
+CONFIG_SW_COEXIST_ENABLE=y

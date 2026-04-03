@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include "config.h"
+#include "utils/time_util.h"
 #include "meshtastic/meshtastic_tcp.h"
 #include "bitchat/bitchat_ble.h"
 #include "bridge/bridge_manager.h"
@@ -50,6 +51,19 @@ void setup() {
     if (!wifi_connect()) {
         Serial.println("WARNING: No WiFi — Meshtastic side unavailable");
         Serial.println("         Bitchat BLE will still operate");
+    } else {
+        // Sync time via NTP (needed for bitchat packet timestamps)
+        configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+        Serial.print("NTP sync");
+        for (int i = 0; i < 10 && !time_is_synced(); i++) {
+            delay(500);
+            Serial.print(".");
+        }
+        if (time_is_synced()) {
+            Serial.printf(" OK (epoch: %llu)\n", bitchat_epoch_ms());
+        } else {
+            Serial.println(" FAILED (using millis fallback)");
+        }
     }
 
     // Start the bridge (initializes both interfaces)

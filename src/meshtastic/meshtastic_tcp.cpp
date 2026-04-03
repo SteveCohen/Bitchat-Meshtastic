@@ -181,16 +181,10 @@ void MeshtasticTCP::_process_byte(uint8_t b) {
 }
 
 void MeshtasticTCP::_handle_from_radio(const uint8_t *buf, int len) {
-    // Check for config_complete_id
+    // During config phase, parse for my_info BEFORE checking config_complete
+    // to avoid a race where config_complete arrives before my_info is parsed.
     if (!_config_complete) {
-        if (mesh_proto::is_config_complete(buf, len, _config_nonce)) {
-            _config_complete = true;
-            Serial.printf("[%s] Config complete, my_node=%08x\n", TAG, _my_node_id);
-            return;
-        }
-        // During config phase, look for my_info (field 3) to get our node ID.
-        // FromRadio { my_info: field 3 (MyNodeInfo) }
-        // MyNodeInfo { my_node_num: field 1 (fixed32) }
+        // Always scan for my_info (field 3) to get our node ID.
         int pos = 0;
         while (pos < len) {
             mesh_proto::ProtoField f;
@@ -213,6 +207,12 @@ void MeshtasticTCP::_handle_from_radio(const uint8_t *buf, int len) {
                     }
                 }
             }
+        }
+
+        // Now check for config_complete (after my_info has been parsed)
+        if (mesh_proto::is_config_complete(buf, len, _config_nonce)) {
+            _config_complete = true;
+            Serial.printf("[%s] Config complete, my_node=%08x\n", TAG, _my_node_id);
         }
         return;
     }

@@ -1,5 +1,6 @@
 #include "bitchat_ble.h"
 #include "ed25519.h"
+#include "../utils/time_util.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <cstring>
@@ -38,11 +39,13 @@ public:
     void onWrite(NimBLECharacteristic *chr, NimBLEConnInfo &info) override {
         NimBLEAttValue val = chr->getValue();
         int len = (int)val.length();
-        if (len > 0 && len <= BitchatBLE::RX_BUF_SIZE && !_p->_rx_ready) {
-            memcpy((void *)_p->_rx_buf, val.data(), len);
-            _p->_rx_len         = len;
-            _p->_rx_conn_handle = info.getConnHandle();
-            _p->_rx_ready       = true;
+        int next = (_p->_rx_head + 1) % BitchatBLE::RX_QUEUE_SIZE;
+        if (len > 0 && len <= BitchatBLE::RX_BUF_SIZE && next != _p->_rx_tail) {
+            auto &entry = _p->_rx_queue[_p->_rx_head];
+            memcpy(entry.data, val.data(), len);
+            entry.len = len;
+            entry.conn_handle = info.getConnHandle();
+            _p->_rx_head = next;
         }
     }
 
@@ -100,6 +103,22 @@ static int unpad_packet(const uint8_t *buf, int len) {
 bool BitchatBLE::begin() {
     Serial.printf("[%s] Initializing...\n", TAG);
 
+    // Ed25519 self-test: RFC 8032 Test Vector 1 (all-zero seed)
+    {
+        uint8_t seed[32] = {};  // all zeros
+        uint8_t pk[32], sk[64];
+        ed25519_create_keypair(seed, pk, sk);
+        // Expected public key for zero seed (RFC 8032 section 7.1, test 1):
+        // 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29
+        static const uint8_t expected_pk[4] = {0x3b, 0x6a, 0x27, 0xbc};
+        if (memcmp(pk, expected_pk, 4) != 0) {
+            Serial.printf("[%s] Ed25519 self-test FAILED! pk=%02x%02x%02x%02x (expected 3b6a27bc)\n",
+                          TAG, pk[0], pk[1], pk[2], pk[3]);
+            return false;
+        }
+        Serial.printf("[%s] Ed25519 self-test: PASS\n", TAG);
+    }
+
     if (!bitchat_identity_init(&_keypair)) {
         Serial.printf("[%s] Failed to init identity\n", TAG);
         return false;
@@ -109,11 +128,15 @@ bool BitchatBLE::begin() {
     bitchat_fingerprint_short(_keypair.fingerprint, fp, sizeof(fp));
     Serial.printf("[%s] Peer ID: %s...\n", TAG, fp);
 
-    _init_ble_server();
+    // Derive BLE device name from fingerprint so it doesn't scream "bridge"
+    char ble_name[16];
+    snprintf(ble_name, sizeof(ble_name), "bc-%s", fp);
+
+    _init_ble_server(ble_name);
     _start_advertising();
 
     _active = true;
-    Serial.printf("[%s] Active, advertising as '%s'\n", TAG, BRIDGE_NAME);
+    Serial.printf("[%s] Active, advertising as '%s'\n", TAG, ble_name);
 
     // Start scanning for other bitchat devices (central role)
     _start_scanning();
@@ -123,6 +146,7 @@ bool BitchatBLE::begin() {
 
 void BitchatBLE::end() {
     if (_active) {
+        _send_leave();
         NimBLEDevice::deinit(true);
         _active    = false;
         _server    = nullptr;
@@ -136,22 +160,34 @@ bool BitchatBLE::is_active() const { return _active; }
 void BitchatBLE::loop() {
     if (!_active) return;
 
-    // Process incoming packet from BLE callback
-    if (_rx_ready) {
+    // Drain the RX ring buffer (process all pending packets)
+    while (_rx_tail != _rx_head) {
+        auto &entry = _rx_queue[_rx_tail];
+        _rx_buf         = entry.data;
+        _rx_len         = entry.len;
+        _rx_conn_handle = entry.conn_handle;
         _process_incoming();
-        _rx_ready = false;
+        _rx_tail = (_rx_tail + 1) % RX_QUEUE_SIZE;
     }
 
     // Periodically restart scanning if we have room for more peers
     if (millis() - _last_scan_ms > 15000 && _active_peer_count() < BITCHAT_MAX_CONNECTIONS) {
         _start_scanning();
     }
+
+    // Periodic re-announce to keep peers aware of our presence
+    if (millis() - _last_announce_ms > BITCHAT_ANNOUNCE_INTERVAL_MS) {
+        _last_announce_ms = millis();
+        for (auto &p : _peers) {
+            if (p.active && p.announce_sent) _send_announce(&p);
+        }
+    }
 }
 
 // ── BLE server init (peripheral role) ────────────────────────────────
 
-void BitchatBLE::_init_ble_server() {
-    NimBLEDevice::init(BRIDGE_NAME);
+void BitchatBLE::_init_ble_server(const char *name) {
+    NimBLEDevice::init(name);
     NimBLEDevice::setPower(9);
     NimBLEDevice::setMTU(BITCHAT_BLE_MTU);
 
@@ -194,7 +230,11 @@ private:
 // Scan-complete callback (free function for NimBLE 1.4 API)
 static BitchatBLE *_g_ble_instance = nullptr;
 static void _scan_complete_cb(NimBLEScanResults results) {
-    if (_g_ble_instance) _g_ble_instance->_scanning = false;
+    if (_g_ble_instance) {
+        _g_ble_instance->_scanning = false;
+        // Restart advertising after scan completes so new clients can discover us
+        NimBLEDevice::startAdvertising();
+    }
 }
 
 void BitchatBLE::_start_scanning() {
@@ -238,6 +278,9 @@ void BitchatBLE::_on_scan_result(NimBLEAdvertisedDevice *dev) {
     _scanning = false;
 
     _connect_to_peripheral(dev);
+
+    // Restart advertising so other clients can still discover us
+    _start_advertising();
 }
 
 // ── NimBLE client callbacks (central role disconnect handling) ────────
@@ -302,11 +345,13 @@ void BitchatBLE::_connect_to_peripheral(NimBLEAdvertisedDevice *dev) {
     if (chr->canNotify()) {
         chr->subscribe(true, [this](NimBLERemoteCharacteristic *c,
                                      uint8_t *data, size_t length, bool isNotify) {
-            if (length > 0 && (int)length <= RX_BUF_SIZE && !_rx_ready) {
-                memcpy((void *)_rx_buf, data, length);
-                _rx_len         = (int)length;
-                _rx_conn_handle = c->getRemoteService()->getClient()->getConnId();
-                _rx_ready       = true;
+            int next = (_rx_head + 1) % RX_QUEUE_SIZE;
+            if (length > 0 && (int)length <= RX_BUF_SIZE && next != _rx_tail) {
+                auto &entry = _rx_queue[_rx_head];
+                memcpy(entry.data, data, length);
+                entry.len = (int)length;
+                entry.conn_handle = c->getRemoteService()->getClient()->getConnId();
+                _rx_head = next;
             }
         });
     }
@@ -333,10 +378,14 @@ bool BitchatBLE::send_text(const char *text) {
 
         if (p.hs.phase == NOISE_HS_TRANSPORT) {
             // Peer has Noise session → send encrypted private message.
-            // Inner payload: PrivateMessagePacket TLV with content(0x01)
+            // Inner payload: PrivateMessagePacket TLVs: messageID(0x00) + content(0x01)
             uint8_t inner[256];
             int inner_len = 0;
-            inner_len += _tlv_encode(inner + inner_len, 0x01,
+            uint8_t msg_id[16];
+            esp_fill_random(msg_id, sizeof(msg_id));
+            inner_len += _tlv_encode(inner + inner_len, BITCHAT_TLV_MESSAGE_ID,
+                                     msg_id, 16);
+            inner_len += _tlv_encode(inner + inner_len, BITCHAT_TLV_CONTENT,
                                      (const uint8_t *)text, (uint8_t)text_len);
             _send_encrypted(&p, NOISE_PAYLOAD_PRIVATE_MSG, inner, inner_len);
             sent_any = true;
@@ -348,12 +397,12 @@ bool BitchatBLE::send_text(const char *text) {
                                    (const uint8_t *)text, (uint8_t)text_len);
 
             // Build and send to this specific peer
-            static uint8_t packet[2048];
+            uint8_t packet[2048];
             int pos = 0;
             packet[pos++] = 0x01;
             packet[pos++] = BITCHAT_PKT_MESSAGE;
             packet[pos++] = BITCHAT_MAX_HOPS;
-            uint64_t ts = (uint64_t)millis();
+            uint64_t ts = bitchat_epoch_ms();
             for (int i = 7; i >= 0; i--) packet[pos++] = (ts >> (i * 8)) & 0xFF;
             packet[pos++] = BITCHAT_FLAG_HAS_SIGNATURE;
             packet[pos++] = ((uint16_t)tlv_len >> 8) & 0xFF;
@@ -386,7 +435,7 @@ void BitchatBLE::_send_encrypted(PeerSession *peer, uint8_t noise_type,
     size_t pt_len = 1 + inner_len;
 
     // Build the packet header first (needed as AAD for AEAD)
-    static uint8_t packet[2048];
+    uint8_t packet[2048];
     int pos = 0;
 
     // We don't know the ciphertext length until after encryption,
@@ -396,7 +445,7 @@ void BitchatBLE::_send_encrypted(PeerSession *peer, uint8_t noise_type,
     packet[pos++] = 0x01;                        // version
     packet[pos++] = BITCHAT_PKT_NOISE_ENCRYPTED;
     packet[pos++] = BITCHAT_MAX_HOPS;
-    uint64_t ts = (uint64_t)millis();
+    uint64_t ts = bitchat_epoch_ms();
     for (int i = 7; i >= 0; i--) packet[pos++] = (ts >> (i * 8)) & 0xFF;
     packet[pos++] = BITCHAT_FLAG_HAS_SIGNATURE;   // flags
     packet[pos++] = (ct_len_expected >> 8) & 0xFF;
@@ -429,14 +478,14 @@ void BitchatBLE::_send_encrypted(PeerSession *peer, uint8_t noise_type,
 
 void BitchatBLE::_send_packet(uint8_t type, uint8_t flags,
                                const uint8_t *payload, uint16_t payload_len) {
-    static uint8_t packet[2048];
+    uint8_t packet[2048];
     int pos = 0;
 
     // Fixed header (14 bytes)
     packet[pos++] = 0x01;                        // version
     packet[pos++] = type;
     packet[pos++] = BITCHAT_MAX_HOPS;            // TTL
-    uint64_t ts = (uint64_t)millis();
+    uint64_t ts = bitchat_epoch_ms();
     for (int i = 7; i >= 0; i--) packet[pos++] = (ts >> (i * 8)) & 0xFF;
     packet[pos++] = flags | BITCHAT_FLAG_HAS_SIGNATURE;
     packet[pos++] = (payload_len >> 8) & 0xFF;
@@ -508,12 +557,12 @@ void BitchatBLE::_send_announce(PeerSession *peer) {
                            _keypair.sign_public, 32);  // zeroed for Phase 1
 
     // Build packet
-    static uint8_t packet[512];
+    uint8_t packet[512];
     int pos = 0;
     packet[pos++] = 0x01;                        // version
     packet[pos++] = BITCHAT_PKT_ANNOUNCE;
     packet[pos++] = BITCHAT_MAX_HOPS;
-    uint64_t ts = (uint64_t)millis();
+    uint64_t ts = bitchat_epoch_ms();
     for (int i = 7; i >= 0; i--) packet[pos++] = (ts >> (i * 8)) & 0xFF;
     packet[pos++] = BITCHAT_FLAG_HAS_SIGNATURE;  // flags
     packet[pos++] = ((uint16_t)tlv_len >> 8) & 0xFF;
@@ -534,18 +583,46 @@ void BitchatBLE::_send_announce(PeerSession *peer) {
     Serial.printf("[%s] Sent announce to handle=%d\n", TAG, peer->conn_handle);
 }
 
+// ── _send_leave ──────────────────────────────────────────────────────
+// Broadcast PKT_LEAVE (0x03) to all active peers to signal our departure.
+
+void BitchatBLE::_send_leave() {
+    uint8_t packet[256];
+    int pos = 0;
+
+    packet[pos++] = 0x01;                        // version
+    packet[pos++] = BITCHAT_PKT_LEAVE;
+    packet[pos++] = BITCHAT_MAX_HOPS;
+    uint64_t ts = bitchat_epoch_ms();
+    for (int i = 7; i >= 0; i--) packet[pos++] = (ts >> (i * 8)) & 0xFF;
+    packet[pos++] = BITCHAT_FLAG_HAS_SIGNATURE;
+    packet[pos++] = 0x00;                        // payload_len high
+    packet[pos++] = 0x00;                        // payload_len low (no payload)
+    memcpy(packet + pos, _keypair.fingerprint, BITCHAT_SENDER_ID_LEN);
+    pos += BITCHAT_SENDER_ID_LEN;
+
+    // Ed25519 signature
+    ed25519_sign(packet + pos, packet, pos, _keypair.sign_private);
+    pos += 64;
+
+    for (auto &p : _peers) {
+        if (p.active) _send_to_peer(&p, packet, pos);
+    }
+    Serial.printf("[%s] Sent PKT_LEAVE to all peers\n", TAG);
+}
+
 // ── _send_handshake_packet ────────────────────────────────────────────
 // Sends raw Noise bytes in a PKT_NOISE_HANDSHAKE (0x10) unicast packet.
 
 void BitchatBLE::_send_handshake_packet(PeerSession *peer,
                                          const uint8_t *payload, size_t payload_len) {
-    static uint8_t packet[512];
+    uint8_t packet[512];
     int pos = 0;
 
     packet[pos++] = 0x01;                        // version
     packet[pos++] = BITCHAT_PKT_NOISE_HANDSHAKE;
     packet[pos++] = BITCHAT_MAX_HOPS;
-    uint64_t ts = (uint64_t)millis();
+    uint64_t ts = bitchat_epoch_ms();
     for (int i = 7; i >= 0; i--) packet[pos++] = (ts >> (i * 8)) & 0xFF;
     packet[pos++] = BITCHAT_FLAG_HAS_SIGNATURE;   // flags
     packet[pos++] = ((uint16_t)payload_len >> 8) & 0xFF;
@@ -621,9 +698,13 @@ void BitchatBLE::_process_incoming() {
     if (!peer) {
         peer = _alloc_peer(_rx_conn_handle, nullptr, false);
     }
+    if (!peer) {
+        Serial.printf("[%s] No free peer slots, dropping packet\n", TAG);
+        return;
+    }
 
     // Update peer_id from sender_id if not yet known
-    if (peer && !peer->peer_id_known) {
+    if (!peer->peer_id_known) {
         memcpy(peer->peer_id, sender_id, BITCHAT_SENDER_ID_LEN);
         peer->peer_id_known = true;
     }
@@ -644,6 +725,10 @@ void BitchatBLE::_process_incoming() {
         case BITCHAT_PKT_FRAGMENT:
             _handle_fragment(peer, payload, payload_len, _rx_conn_handle);
             return;  // don't relay fragments — reassembled packet will be processed
+        case BITCHAT_PKT_REQUEST_SYNC:
+            Serial.printf("[%s] Sync request from peer, sending announce\n", TAG);
+            _send_announce(peer);
+            return;
         default:
             Serial.printf("[%s] Unknown packet type 0x%02x\n", TAG, type);
             break;
@@ -805,7 +890,7 @@ void BitchatBLE::_handle_encrypted(PeerSession *peer,
         return;
     }
 
-    static uint8_t plaintext[512];
+    uint8_t plaintext[512];
     size_t pt_len = 0;
     int ret = noise_hs_decrypt(&peer->hs,
                                 pkt, hdr_len,  // AAD = header (v1 or v2)
@@ -824,10 +909,13 @@ void BitchatBLE::_handle_encrypted(PeerSession *peer,
 
     if (noise_type == NOISE_PAYLOAD_PRIVATE_MSG && inner_len > 0) {
         // Inner data is a PrivateMessagePacket TLV: messageID(0x00) + content(0x01)
-        // For bridge purposes, extract content TLV type 0x01
+        const uint8_t *msg_id_val = nullptr;
+        uint8_t msg_id_len = 0;
+        _tlv_find(inner, inner_len, BITCHAT_TLV_MESSAGE_ID, &msg_id_val, &msg_id_len);
+
         const uint8_t *content_val = nullptr;
         uint8_t content_len = 0;
-        _tlv_find(inner, inner_len, 0x01, &content_val, &content_len);
+        _tlv_find(inner, inner_len, BITCHAT_TLV_CONTENT, &content_val, &content_len);
 
         if (content_val && content_len > 0) {
             BridgeMessage msg;
@@ -843,7 +931,19 @@ void BitchatBLE::_handle_encrypted(PeerSession *peer,
 
             Serial.printf("[%s] Private msg from %s: \"%s\"\n", TAG, msg.sender.display_name, msg.text);
             if (_on_message) _on_message(msg);
+
+            // Send delivery receipt back to the sender
+            if (msg_id_val && msg_id_len > 0) {
+                uint8_t receipt[20];
+                int rlen = _tlv_encode(receipt, BITCHAT_TLV_MESSAGE_ID,
+                                       msg_id_val, msg_id_len);
+                _send_encrypted(peer, NOISE_PAYLOAD_DELIVERED, receipt, rlen);
+            }
         }
+    } else if (noise_type == NOISE_PAYLOAD_READ_RECEIPT ||
+               noise_type == NOISE_PAYLOAD_DELIVERED) {
+        // Receipts from peers — acknowledge but no action needed for bridge
+        Serial.printf("[%s] Receipt type 0x%02x from peer\n", TAG, noise_type);
     } else {
         Serial.printf("[%s] Encrypted payload type 0x%02x (%d bytes)\n", TAG, noise_type, inner_len);
     }
@@ -887,12 +987,12 @@ void BitchatBLE::_send_fragmented(PeerSession *peer, const uint8_t *pkt, int pkt
         fp += chunk_len;
 
         // Build the fragment packet with header + signature
-        static uint8_t packet[2048];
+        uint8_t packet[2048];
         int pos = 0;
         packet[pos++] = 0x01;
         packet[pos++] = BITCHAT_PKT_FRAGMENT;
         packet[pos++] = BITCHAT_MAX_HOPS;
-        uint64_t ts = (uint64_t)millis();
+        uint64_t ts = bitchat_epoch_ms();
         for (int b = 7; b >= 0; b--) packet[pos++] = (ts >> (b * 8)) & 0xFF;
         packet[pos++] = BITCHAT_FLAG_HAS_SIGNATURE;
         packet[pos++] = ((uint16_t)fp >> 8) & 0xFF;
@@ -962,18 +1062,17 @@ void BitchatBLE::_handle_fragment(PeerSession * /*peer*/, const uint8_t *payload
         slot->start_ms    = now;
     }
 
-    // Store fragment data
+    // Store fragment data — each fragment goes to a fixed per-index region
+    // so out-of-order arrival doesn't corrupt the buffer.
+    // We store fragments at the end of the data buffer in per-index staging areas,
+    // then concatenate in order when all fragments are received.
     if (!(slot->received_mask & (1 << frag_idx))) {
-        // Calculate offset in reassembly buffer
-        int data_offset = 0;
-        for (int i = 0; i < frag_idx; i++) data_offset += slot->frag_lengths[i];
-        // If previous fragments haven't been received, estimate offset
-        if (frag_idx > 0 && slot->frag_lengths[0] == 0) {
-            data_offset = frag_idx * chunk_len;  // best guess
-        }
-        if (data_offset + chunk_len <= (int)sizeof(slot->data)) {
-            memcpy(slot->data + data_offset, chunk, chunk_len);
-            slot->frag_offsets[frag_idx] = data_offset;
+        // Store at a per-index staging offset: frag_idx * max_chunk_size
+        // Max chunk from sender is ~356 bytes; use 256 slots for safety
+        int stage_offset = frag_idx * (int)(sizeof(slot->data) / BITCHAT_MAX_FRAGMENTS);
+        if (stage_offset + chunk_len <= (int)sizeof(slot->data)) {
+            memcpy(slot->data + stage_offset, chunk, chunk_len);
+            slot->frag_offsets[frag_idx] = stage_offset;
             slot->frag_lengths[frag_idx] = chunk_len;
             slot->received_mask |= (1 << frag_idx);
         }
@@ -982,19 +1081,29 @@ void BitchatBLE::_handle_fragment(PeerSession * /*peer*/, const uint8_t *payload
     // Check if all fragments received
     uint8_t expected_mask = (uint8_t)((1 << total_frags) - 1);
     if (slot->received_mask == expected_mask) {
-        // Reassemble complete — compute total length
+        // Concatenate fragments in index order into a contiguous buffer
+        uint8_t assembled[2048];
         int total_len = 0;
-        for (int i = 0; i < total_frags; i++) total_len += slot->frag_lengths[i];
+        for (int i = 0; i < total_frags; i++) {
+            int soff = slot->frag_offsets[i];
+            int slen = slot->frag_lengths[i];
+            if (total_len + slen <= (int)sizeof(assembled)) {
+                memcpy(assembled + total_len, slot->data + soff, slen);
+                total_len += slen;
+            }
+        }
 
         Serial.printf("[%s] Reassembled msg_id=%08x (%d bytes from %d fragments)\n",
                       TAG, msg_id, total_len, total_frags);
 
-        // Feed the reassembled packet back through _process_incoming
-        if (total_len > 0 && total_len <= RX_BUF_SIZE && !_rx_ready) {
-            memcpy((void *)_rx_buf, slot->data, total_len);
-            _rx_len         = total_len;
-            _rx_conn_handle = conn_handle;
-            _rx_ready       = true;
+        // Feed reassembled packet into the RX ring buffer
+        int next = (_rx_head + 1) % RX_QUEUE_SIZE;
+        if (total_len > 0 && total_len <= RX_BUF_SIZE && next != _rx_tail) {
+            auto &entry = _rx_queue[_rx_head];
+            memcpy(entry.data, assembled, total_len);
+            entry.len = total_len;
+            entry.conn_handle = conn_handle;
+            _rx_head = next;
         }
 
         slot->active = false;
@@ -1046,7 +1155,7 @@ void BitchatBLE::_relay_packet(const uint8_t *pkt, int pkt_len, uint16_t except_
     _relay_record(h);
 
     // Copy packet and decrement TTL
-    static uint8_t relay_buf[2048];
+    uint8_t relay_buf[2048];
     int copy_len = (pkt_len < (int)sizeof(relay_buf)) ? pkt_len : (int)sizeof(relay_buf);
     memcpy(relay_buf, pkt, copy_len);
     relay_buf[2] = relay_buf[2] - 1;  // decrement TTL

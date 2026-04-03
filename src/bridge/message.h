@@ -50,6 +50,9 @@ struct BridgeMessage {
         }
         // Mix in sender identity so same text from different senders isn't deduped
         h ^= sender.meshtastic_node_id;
+        uint32_t bf = 0;
+        memcpy(&bf, sender.bitchat_fingerprint, 4);
+        h ^= bf;
         return h;
     }
 };

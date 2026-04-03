@@ -64,6 +64,10 @@
 #define BITCHAT_TLV_CHANNEL         0x07  // Channel identifier
 #define BITCHAT_TLV_GEOHASH         0x08  // Location geohash
 
+// ── PrivateMessagePacket inner TLV types ──────────────
+#define BITCHAT_TLV_MESSAGE_ID      0x00  // 16-byte random message ID
+#define BITCHAT_TLV_CONTENT         0x01  // UTF-8 message content
+
 // ── NoisePayload types (inside decrypted 0x11 packets) ─
 #define NOISE_PAYLOAD_PRIVATE_MSG   0x01  // Private message
 #define NOISE_PAYLOAD_READ_RECEIPT  0x02  // Read receipt
@@ -73,6 +77,7 @@
 
 // ── Bitchat BLE parameters ───────────────────────────
 #define BITCHAT_MAX_CONNECTIONS     4
+#define BITCHAT_ANNOUNCE_INTERVAL_MS (60 * 1000)  // Re-announce every 60s
 #define BITCHAT_SCAN_RSSI_MIN       (-70)
 #define BITCHAT_BLE_MTU             512
 #define BITCHAT_MAX_TEXT_LEN        100

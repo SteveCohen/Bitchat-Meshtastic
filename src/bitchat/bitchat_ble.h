@@ -60,18 +60,29 @@ private:
     // Per-peer Noise sessions (supports both central and peripheral connections)
     PeerSession _peers[BITCHAT_MAX_CONNECTIONS] = {};
 
-    // Incoming raw packet (filled by BLE write callback or notify callback)
+    // Incoming packet ring buffer (SPSC: BLE callbacks produce, loop() consumes)
     static constexpr int RX_BUF_SIZE = BITCHAT_BLE_MTU;
-    uint8_t          _rx_buf[RX_BUF_SIZE] = {};
-    volatile int     _rx_len              = 0;
-    volatile bool    _rx_ready            = false;
-    volatile uint16_t _rx_conn_handle     = 0;
+    static constexpr int RX_QUEUE_SIZE = 4;
+    struct RxEntry {
+        uint8_t data[RX_BUF_SIZE];
+        int len;
+        uint16_t conn_handle;
+    };
+    RxEntry          _rx_queue[RX_QUEUE_SIZE] = {};
+    volatile int     _rx_head = 0;  // next write position (producer)
+    volatile int     _rx_tail = 0;  // next read position (consumer)
+
+    // Legacy aliases used during _process_incoming
+    uint8_t         *_rx_buf = nullptr;
+    int              _rx_len = 0;
+    uint16_t         _rx_conn_handle = 0;
 
 public:
     // Scanning state (public for scan-complete free function callback)
     bool     _scanning     = false;
 private:
     uint32_t _last_scan_ms = 0;
+    uint32_t _last_announce_ms = 0;
 
     // Relay dedup cache — prevents re-forwarding packets we've already seen
     struct RelayDedupEntry { uint32_t hash; uint32_t timestamp_ms; };
@@ -84,7 +95,7 @@ private:
 
     // ── Private methods ───────────────────────────────────────────────
 
-    void _init_ble_server();
+    void _init_ble_server(const char *name);
     void _start_advertising();
     void _start_scanning();
     void _on_scan_result(NimBLEAdvertisedDevice *dev);
@@ -117,6 +128,7 @@ private:
 
     // Build and send an announce packet (type 0x01) to a specific peer
     void _send_announce(PeerSession *peer);
+    void _send_leave();
 
     // Relay/gossip: forward a packet to all peers except the sender
     void _relay_packet(const uint8_t *pkt, int pkt_len, uint16_t except_handle);
