@@ -2,16 +2,26 @@
 
 ## Overview
 
-A bridge running on ESP32-S3 that relays messages between a **Meshtastic** LoRa mesh
-network and a **Bitchat** BLE mesh network. Users on either network see messages
-from the other side rebroadcast into their own mesh.
+A bridge running on **ESP32-S3** or **ESP32-C6** that relays messages between a
+**Meshtastic** LoRa mesh network and a **Bitchat** BLE mesh network. Users on
+either network see messages from the other side rebroadcast into their own mesh.
 
 ```
 ┌──────────────┐       BLE        ┌─────────────────┐       TCP/4403       ┌──────────────────┐
-│  Bitchat App │ ◄──────────────► │   ESP32-S3      │ ◄──────────────────► │  Meshtastic Node │
+│  Bitchat App │ ◄──────────────► │  ESP32-S3/C6    │ ◄──────────────────► │  Meshtastic Node │
 │  (Phone)     │   bitchat mesh   │   BRIDGE        │   WiFi / Ethernet    │  (LoRa Radio)    │
 └──────────────┘                  └─────────────────┘                      └──────────────────┘
 ```
+
+### Supported Hardware
+
+| Chip | Board | Environment | Notes |
+|------|-------|-------------|-------|
+| ESP32-S3 | DevKitC-1 N8 | `esp32s3` | Dual-core 240 MHz, no PSRAM |
+| ESP32-S3 | DevKitC-1 N8R8/N16R8 | `esp32s3-psram` | With PSRAM |
+| ESP32-C6 | DevKitC-1 | `esp32c6` | Single-core RISC-V 160 MHz, WiFi 6, BLE 5 |
+
+Build for your board: `pio run -e esp32c6` (or `esp32s3`)
 
 ## Design Principles
 
@@ -159,7 +169,7 @@ class IdentityMapper {
 
 ```
 ├── PLAN.md                          # This file
-├── platformio.ini                   # PlatformIO build config (ESP32-S3, ESP-IDF)
+├── platformio.ini                   # PlatformIO build config (ESP32-S3/C6)
 ├── proto/
 │   └── meshtastic/
 │       ├── mesh.proto               # Core Meshtastic protobufs (subset)
@@ -191,7 +201,7 @@ class IdentityMapper {
 
 | Choice | Rationale |
 |--------|-----------|
-| **PlatformIO + ESP-IDF** | Full ESP32-S3 support, BLE + WiFi stacks |
+| **PlatformIO + ESP-IDF** | Full ESP32-S3/C6 support, BLE + WiFi stacks |
 | **Hand-rolled protobuf** | Only need ToRadio/FromRadio text messages; avoids nanopb build complexity initially |
 | **C++ (Arduino-like)** | Familiar, good ESP32 ecosystem, PlatformIO default |
 | **NimBLE** | Lightweight BLE stack included with ESP-IDF, supports GATT server + central role |

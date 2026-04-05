@@ -1,4 +1,4 @@
-# ESP32-S3 sdkconfig overrides for Meshtastic-Bitchat bridge
+# ESP32-S3 / ESP32-C6 sdkconfig overrides for Meshtastic-Bitchat bridge
 #
 # BLE (NimBLE) + WiFi run concurrently with Noise crypto — needs adequate
 # stack/heap. The bridge runs both central and peripheral roles simultaneously.
@@ -34,6 +34,8 @@ CONFIG_MBEDTLS_HKDF_C=y
 # mbedtls: enable Curve25519 (required for Noise DH)
 CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=y
 
-# WiFi/BLE coexistence: prevent one radio from starving the other
+# WiFi/BLE coexistence: prevent one radio from starving the other.
+# Chip-specific Kconfig names — non-matching ones are silently ignored.
 CONFIG_ESP32_WIFI_SW_COEXIST_ENABLE=y
+CONFIG_ESP32C6_WIFI_SW_COEXIST_ENABLE=y
 CONFIG_SW_COEXIST_ENABLE=y
