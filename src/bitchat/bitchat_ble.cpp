@@ -422,6 +422,106 @@ bool BitchatBLE::send_text(const char *text) {
     return sent_any;
 }
 
+// ── send_text_as (Option A: plaintext only) ─────────────────────────
+// Send a PKT_MESSAGE as a virtual identity. Always plaintext (no Noise).
+
+bool BitchatBLE::send_text_as(const char *text, const BitchatKeypair *identity) {
+    if (!_active || !identity) return false;
+
+    int text_len = (int)strlen(text);
+    if (text_len > BITCHAT_MAX_TEXT_LEN) text_len = BITCHAT_MAX_TEXT_LEN;
+
+    uint8_t tlv_buf[256];
+    int tlv_len = 0;
+    tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_TEXT,
+                           (const uint8_t *)text, (uint8_t)text_len);
+
+    uint8_t packet[2048];
+    int pos = 0;
+    packet[pos++] = 0x01;                        // version
+    packet[pos++] = BITCHAT_PKT_MESSAGE;
+    packet[pos++] = BITCHAT_MAX_HOPS;            // TTL
+    uint64_t ts = bitchat_epoch_ms();
+    for (int i = 7; i >= 0; i--) packet[pos++] = (ts >> (i * 8)) & 0xFF;
+    packet[pos++] = BITCHAT_FLAG_HAS_SIGNATURE;  // flags
+    packet[pos++] = ((uint16_t)tlv_len >> 8) & 0xFF;
+    packet[pos++] =  (uint16_t)tlv_len       & 0xFF;
+
+    // Sender ID = first 8 bytes of the virtual identity's fingerprint
+    memcpy(packet + pos, identity->fingerprint, BITCHAT_SENDER_ID_LEN);
+    pos += BITCHAT_SENDER_ID_LEN;
+
+    // Payload
+    memcpy(packet + pos, tlv_buf, tlv_len);
+    pos += tlv_len;
+
+    // Sign with the virtual identity's Ed25519 key
+    ed25519_sign(packet + pos, packet, pos, identity->sign_private);
+    pos += 64;
+
+    _relay_record(_relay_hash(packet, pos));
+    pos = _pad_packet(packet, pos, sizeof(packet));
+
+    bool sent_any = false;
+    for (auto &p : _peers) {
+        if (!p.active) continue;
+        _send_to_peer(&p, packet, pos);
+        sent_any = true;
+    }
+
+    return sent_any;
+}
+
+// ── announce_virtual ────────────────────────────────────────────────
+// Send a PKT_ANNOUNCE as a virtual identity to all connected peers.
+
+void BitchatBLE::announce_virtual(const BitchatKeypair *identity, const char *name) {
+    if (!_active || !identity) return;
+
+    uint8_t tlv_buf[128];
+    int tlv_len = 0;
+
+    const char *nick = name ? name : "mesh_user";
+    int nick_len = (int)strlen(nick);
+    if (nick_len > 31) nick_len = 31;
+    tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_NICKNAME,
+                           (const uint8_t *)nick, (uint8_t)nick_len);
+    tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_NOISE_PUBKEY,
+                           identity->noise_public, 32);
+    tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_SIGNING_PUBKEY,
+                           identity->sign_public, 32);
+
+    uint8_t packet[512];
+    int pos = 0;
+    packet[pos++] = 0x01;                        // version
+    packet[pos++] = BITCHAT_PKT_ANNOUNCE;
+    packet[pos++] = BITCHAT_MAX_HOPS;
+    uint64_t ts = bitchat_epoch_ms();
+    for (int i = 7; i >= 0; i--) packet[pos++] = (ts >> (i * 8)) & 0xFF;
+    packet[pos++] = BITCHAT_FLAG_HAS_SIGNATURE;
+    packet[pos++] = ((uint16_t)tlv_len >> 8) & 0xFF;
+    packet[pos++] =  (uint16_t)tlv_len       & 0xFF;
+
+    // Sender ID from virtual identity
+    memcpy(packet + pos, identity->fingerprint, BITCHAT_SENDER_ID_LEN);
+    pos += BITCHAT_SENDER_ID_LEN;
+
+    memcpy(packet + pos, tlv_buf, tlv_len);
+    pos += tlv_len;
+
+    // Sign with virtual identity's key
+    ed25519_sign(packet + pos, packet, pos, identity->sign_private);
+    pos += 64;
+
+    _relay_record(_relay_hash(packet, pos));
+    pos = _pad_packet(packet, pos, sizeof(packet));
+
+    for (auto &p : _peers) {
+        if (!p.active) continue;
+        _send_to_peer(&p, packet, pos);
+    }
+}
+
 // ── _send_encrypted ───────────────────────────────────────────────────
 // Build PKT_NOISE_ENCRYPTED: header + encrypted(NoisePayload(type + inner))
 

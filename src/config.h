@@ -92,6 +92,11 @@
 #define BITCHAT_FRAG_REASSEMBLY  4   // Concurrent reassembly slots
 #define BITCHAT_FRAG_TIMEOUT_MS  (10 * 1000)  // 10s reassembly timeout
 
+// ── Virtual identities (Phase 2b) ─────────────────────
+#define MAX_VIRTUAL_IDENTITIES      8     // Max concurrent Meshtastic users as bitchat peers
+#define VIRTUAL_IDENTITY_TIMEOUT_MS (10 * 60 * 1000)  // Expire after 10 min inactive
+#define VIRTUAL_ANNOUNCE_STAGGER_MS 200   // Delay between virtual identity announces
+
 // ── Identity mapping ──────────────────────────────────
 #define MAX_IDENTITY_ENTRIES        16    // Max cached names per side (mesh + BLE)
 #define IDENTITY_NVS_NAMESPACE      "idmap"

@@ -3,8 +3,9 @@
 
 static const char *TAG = "Bridge";
 
-BridgeManager::BridgeManager(MeshtasticInterface &mesh, BitchatInterface &bitchat)
-    : _mesh(mesh), _bitchat(bitchat) {}
+BridgeManager::BridgeManager(MeshtasticInterface &mesh, BitchatInterface &bitchat,
+                             const BitchatKeypair *master_kp)
+    : _mesh(mesh), _bitchat(bitchat), _master_kp(master_kp) {}
 
 bool BridgeManager::begin() {
     Serial.printf("[%s] Starting bridge...\n", TAG);
@@ -41,6 +42,19 @@ void BridgeManager::loop() {
     _mesh.loop();
     _bitchat.loop();
 
+    // Periodic re-announce of active virtual identities
+    if (_master_kp && (millis() - _last_virt_announce_ms) > BITCHAT_ANNOUNCE_INTERVAL_MS) {
+        _last_virt_announce_ms = millis();
+        for (int i = 0; i < MAX_VIRTUAL_IDENTITIES; i++) {
+            VirtualIdentity *vi = _virt_registry.slot(i);
+            if (vi && vi->active) {
+                _bitchat.announce_virtual(&vi->keypair,
+                    vi->display_name[0] ? vi->display_name : nullptr);
+                delay(VIRTUAL_ANNOUNCE_STAGGER_MS);
+            }
+        }
+    }
+
     // Reconnect Meshtastic if needed
     if (!_mesh.is_connected()) {
         static unsigned long last_retry = 0;
@@ -68,13 +82,40 @@ void BridgeManager::_on_meshtastic_message(const BridgeMessage &msg) {
                                      msg.sender.display_name, nullptr);
     }
 
-    // Format the message for Bitchat
+    // Try to route through a virtual identity for this Meshtastic sender
+    if (_master_kp && msg.sender.meshtastic_node_id) {
+        VirtualIdentity *vi = _virt_registry.get_or_create(
+            msg.sender.meshtastic_node_id, _master_kp);
+
+        if (vi) {
+            // Update the virtual identity's display name
+            if (msg.sender.display_name[0] && !vi->display_name[0]) {
+                strncpy(vi->display_name, msg.sender.display_name,
+                        sizeof(vi->display_name) - 1);
+                // Announce this new virtual identity to all BLE peers
+                _bitchat.announce_virtual(&vi->keypair, vi->display_name);
+            }
+
+            // Send as the virtual identity (just the raw message text, no prefix)
+            Serial.printf("[%s] Mesh→BLE (virtual %s): %s\n", TAG,
+                          vi->display_name[0] ? vi->display_name : "?", msg.text);
+
+            BridgeMessage outgoing;
+            strncpy(outgoing.text, msg.text, sizeof(outgoing.text) - 1);
+            _record_hash(outgoing.hash());
+
+            _bitchat.send_text_as(msg.text, &vi->keypair);
+            _msg_count++;
+            return;
+        }
+    }
+
+    // Fallback: send as bridge identity with prefix
     char bridged_text[256];
     _format_bridged_text(msg, bridged_text, sizeof(bridged_text));
 
     Serial.printf("[%s] Mesh→BLE: %s\n", TAG, bridged_text);
 
-    // Record the hash of the outgoing message too (to prevent echo)
     BridgeMessage outgoing;
     strncpy(outgoing.text, bridged_text, sizeof(outgoing.text) - 1);
     _record_hash(outgoing.hash());

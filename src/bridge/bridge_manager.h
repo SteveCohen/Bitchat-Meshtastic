@@ -4,11 +4,13 @@
 #include "../bitchat/bitchat_interface.h"
 #include "message.h"
 #include "identity_mapper.h"
+#include "virtual_identity.h"
 #include "../config.h"
 
 class BridgeManager {
 public:
-    BridgeManager(MeshtasticInterface &mesh, BitchatInterface &bitchat);
+    BridgeManager(MeshtasticInterface &mesh, BitchatInterface &bitchat,
+                  const BitchatKeypair *master_kp = nullptr);
 
     // Initialize both sides and wire up callbacks.
     bool begin();
@@ -22,7 +24,12 @@ public:
 private:
     MeshtasticInterface &_mesh;
     BitchatInterface &_bitchat;
+    const BitchatKeypair *_master_kp = nullptr;
     IdentityMapper _id_mapper;
+    VirtualIdentityRegistry _virt_registry;
+
+    // Periodic virtual announce tracking
+    uint32_t _last_virt_announce_ms = 0;
 
     uint32_t _msg_count = 0;
 

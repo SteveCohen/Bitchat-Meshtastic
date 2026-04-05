@@ -10,7 +10,8 @@
 
 static MeshtasticTCP meshtastic;
 static BitchatBLE bitchat;
-static BridgeManager bridge(meshtastic, bitchat);
+// BridgeManager is initialized in setup() after identity is ready
+static BridgeManager *bridge = nullptr;
 
 // ── WiFi connection ──────────────────────────────────
 
@@ -66,14 +67,18 @@ void setup() {
         }
     }
 
+    // Initialize bridge with the bitchat master keypair for virtual identity derivation
+    static BridgeManager bridge_instance(meshtastic, bitchat, &bitchat.identity());
+    bridge = &bridge_instance;
+
     // Start the bridge (initializes both interfaces)
-    if (!bridge.begin()) {
+    if (!bridge->begin()) {
         Serial.println("Bridge init failed — entering retry loop");
     }
 }
 
 void loop() {
-    bridge.loop();
+    if (bridge) bridge->loop();
 
     // Status report every 30 seconds
     static unsigned long last_status = 0;
@@ -82,7 +87,7 @@ void loop() {
         Serial.printf("[Status] Mesh:%s  BLE:%s  Bridged:%d msgs\n",
                       meshtastic.is_connected() ? "OK" : "DISCONNECTED",
                       bitchat.is_active() ? "OK" : "INACTIVE",
-                      bridge.messages_bridged());
+                      bridge ? bridge->messages_bridged() : 0);
     }
 
     delay(10); // Yield to FreeRTOS

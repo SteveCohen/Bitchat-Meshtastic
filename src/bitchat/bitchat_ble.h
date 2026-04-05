@@ -42,6 +42,8 @@ public:
     bool is_active() const override;
     void loop() override;
     bool send_text(const char *text) override;
+    bool send_text_as(const char *text, const BitchatKeypair *identity) override;
+    void announce_virtual(const BitchatKeypair *identity, const char *name) override;
 
     const BitchatKeypair &identity() const { return _keypair; }
 
