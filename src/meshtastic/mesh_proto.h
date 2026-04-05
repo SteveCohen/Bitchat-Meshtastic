@@ -291,6 +291,90 @@ inline bool is_config_complete(const uint8_t *buf, int len, uint32_t expected_no
     return false;
 }
 
+// ── NodeInfo parser ──────────────────────────────────
+//
+// FromRadio.node_info (field 4) contains:
+//   NodeInfo { num: field 1 (fixed32), user: field 2 (bytes) }
+//   User { long_name: field 1 (bytes), short_name: field 2 (bytes) }
+
+struct ParsedNodeInfo {
+    bool valid = false;
+    uint32_t node_num = 0;
+    char long_name[40] = {};
+    char short_name[5] = {};
+};
+
+// Try to extract NodeInfo from a FromRadio payload.
+inline ParsedNodeInfo parse_node_info(const uint8_t *buf, int len) {
+    ParsedNodeInfo result;
+
+    // FromRadio: look for field 4 (node_info)
+    int pos = 0;
+    const uint8_t *ni_data = nullptr;
+    int ni_len = 0;
+
+    while (pos < len) {
+        ProtoField f;
+        int consumed = decode_field(buf + pos, len - pos, &f);
+        if (consumed < 0) break;
+        pos += consumed;
+        if (f.field_num == 4 && f.wire_type == 2) {
+            ni_data = f.bytes_val.data;
+            ni_len = f.bytes_val.len;
+        }
+    }
+
+    if (!ni_data) return result;
+
+    // NodeInfo: num(1, fixed32), user(2, bytes)
+    const uint8_t *user_data = nullptr;
+    int user_len = 0;
+    pos = 0;
+
+    while (pos < ni_len) {
+        ProtoField f;
+        int consumed = decode_field(ni_data + pos, ni_len - pos, &f);
+        if (consumed < 0) break;
+        pos += consumed;
+        switch (f.field_num) {
+            case 1: if (f.wire_type == 5) result.node_num = f.fixed32_val; break;
+            case 2: if (f.wire_type == 2) { user_data = f.bytes_val.data; user_len = f.bytes_val.len; } break;
+        }
+    }
+
+    if (!user_data || result.node_num == 0) return result;
+
+    // User: long_name(1, bytes), short_name(2, bytes)
+    pos = 0;
+    while (pos < user_len) {
+        ProtoField f;
+        int consumed = decode_field(user_data + pos, user_len - pos, &f);
+        if (consumed < 0) break;
+        pos += consumed;
+        switch (f.field_num) {
+            case 1: // long_name
+                if (f.wire_type == 2) {
+                    int n = (f.bytes_val.len < (int)sizeof(result.long_name) - 1) ?
+                             f.bytes_val.len : (int)sizeof(result.long_name) - 1;
+                    memcpy(result.long_name, f.bytes_val.data, n);
+                    result.long_name[n] = '\0';
+                }
+                break;
+            case 2: // short_name
+                if (f.wire_type == 2) {
+                    int n = (f.bytes_val.len < (int)sizeof(result.short_name) - 1) ?
+                             f.bytes_val.len : (int)sizeof(result.short_name) - 1;
+                    memcpy(result.short_name, f.bytes_val.data, n);
+                    result.short_name[n] = '\0';
+                }
+                break;
+        }
+    }
+
+    result.valid = (result.long_name[0] != '\0' || result.short_name[0] != '\0');
+    return result;
+}
+
 // ── Packet ID generator ──────────────────────────────
 
 inline uint32_t generate_packet_id(uint32_t *counter) {

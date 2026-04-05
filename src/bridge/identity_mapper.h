@@ -1,15 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
+#include "../config.h"
 
-// ── Phase 2 Placeholder ──────────────────────────────────────────────
+// ── Identity Mapper ─────────────────────────────────────────────────────
 //
-// IdentityMapper will maintain a bidirectional mapping between Meshtastic
-// node IDs and Bitchat fingerprints, allowing per-user identity on both
-// sides of the bridge.
-//
-// Phase 1: all messages use the single bridge identity.
-// Phase 2: each user gets a virtual identity on the other network.
+// Maintains a bidirectional name cache: Meshtastic node IDs → display names,
+// and Bitchat fingerprints → nicknames. Persists to NVS across reboots.
 
 struct BitchatIdentity {
     uint8_t fingerprint[32];  // SHA-256 of Noise static public key
@@ -26,34 +24,52 @@ struct MeshtasticIdentity {
 
 class IdentityMapper {
 public:
-    // Map a Meshtastic node ID to a Bitchat display identity.
-    // Phase 1: returns the bridge's own identity for all nodes.
-    BitchatIdentity mesh_to_bitchat(uint32_t meshtastic_node_id) {
-        (void)meshtastic_node_id;
-        // TODO Phase 2: look up or create a virtual bitchat identity
-        BitchatIdentity id = {};
-        snprintf(id.display_name, sizeof(id.display_name), "mesh_%08x", meshtastic_node_id);
-        return id;
-    }
+    // ── Name resolution ─────────────────────────────────
 
-    // Map a Bitchat fingerprint to a Meshtastic display identity.
-    // Phase 1: returns a generic bridge identity for all bitchat users.
-    MeshtasticIdentity bitchat_to_mesh(const uint8_t fingerprint[32]) {
-        (void)fingerprint;
-        // TODO Phase 2: look up or create a virtual Meshtastic identity
-        MeshtasticIdentity id = {};
-        id.node_id = 0;
-        snprintf(id.short_name, sizeof(id.short_name), "BC");
-        snprintf(id.long_name, sizeof(id.long_name), "Bitchat User");
-        return id;
-    }
+    // Look up a Meshtastic node's display name. Returns nullptr if unknown.
+    const char* get_mesh_name(uint32_t node_id) const;
 
-    // Persist mappings to NVS (non-volatile storage).
-    void save() {
-        // TODO Phase 2: implement NVS persistence
-    }
+    // Look up a Bitchat peer's nickname. Returns nullptr if unknown.
+    const char* get_ble_name(const uint8_t fingerprint[8]) const;
 
-    void load() {
-        // TODO Phase 2: implement NVS loading
-    }
+    // ── Name registration ───────────────────────────────
+
+    // Store/update a Meshtastic node name (from NodeInfo parsing).
+    void update_mesh_name(uint32_t node_id, const char *long_name, const char *short_name);
+
+    // Store/update a Bitchat peer nickname (from announce packets).
+    void update_ble_name(const uint8_t fingerprint[8], const char *nickname);
+
+    // ── Legacy Phase 1 compatibility ────────────────────
+
+    BitchatIdentity mesh_to_bitchat(uint32_t meshtastic_node_id);
+    MeshtasticIdentity bitchat_to_mesh(const uint8_t fingerprint[32]);
+
+    // ── Persistence ─────────────────────────────────────
+
+    void save();
+    void load();
+
+private:
+    struct MeshEntry {
+        uint32_t node_id = 0;
+        char long_name[40] = {};
+        char short_name[5] = {};
+    };
+
+    struct BleEntry {
+        uint8_t fingerprint[8] = {};
+        char nickname[33] = {};
+    };
+
+    MeshEntry _mesh_names[MAX_IDENTITY_ENTRIES] = {};
+    int _mesh_count = 0;
+
+    BleEntry _ble_names[MAX_IDENTITY_ENTRIES] = {};
+    int _ble_count = 0;
+
+    uint32_t _last_save_ms = 0;
+    bool _dirty = false;
+
+    void _save_if_needed();
 };

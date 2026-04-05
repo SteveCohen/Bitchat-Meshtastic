@@ -25,6 +25,7 @@ struct PeerSession {
     bool     we_are_central = false;  // true if we connected to them
     bool     announce_sent = false;   // true after we sent our announce
     bool     announce_rcvd = false;   // true after we received their announce
+    char     nickname[33]  = {};     // display name from announce (empty if unknown)
     NoiseHandshakeState hs = {};
 
     // For central (client) role: handle to remote characteristic

@@ -209,10 +209,17 @@ void MeshtasticTCP::_handle_from_radio(const uint8_t *buf, int len) {
             }
         }
 
+        // Parse NodeInfo (field 4) to learn user names
+        auto ni = mesh_proto::parse_node_info(buf, len);
+        if (ni.valid) {
+            _store_node_info(ni);
+        }
+
         // Now check for config_complete (after my_info has been parsed)
         if (mesh_proto::is_config_complete(buf, len, _config_nonce)) {
             _config_complete = true;
-            Serial.printf("[%s] Config complete, my_node=%08x\n", TAG, _my_node_id);
+            Serial.printf("[%s] Config complete, my_node=%08x, known nodes=%d\n",
+                          TAG, _my_node_id, _node_count);
         }
         return;
     }
@@ -226,13 +233,57 @@ void MeshtasticTCP::_handle_from_radio(const uint8_t *buf, int len) {
         BridgeMessage bridge_msg;
         bridge_msg.origin = MessageOrigin::MESHTASTIC;
         bridge_msg.sender.meshtastic_node_id = msg.from_node;
-        snprintf(bridge_msg.sender.display_name, sizeof(bridge_msg.sender.display_name),
-                 "!%08x", msg.from_node);
+
+        // Use resolved name if available, else fall back to hex node ID
+        const char *name = get_node_name(msg.from_node);
+        if (name) {
+            strncpy(bridge_msg.sender.display_name, name,
+                    sizeof(bridge_msg.sender.display_name) - 1);
+        } else {
+            snprintf(bridge_msg.sender.display_name, sizeof(bridge_msg.sender.display_name),
+                     "!%08x", msg.from_node);
+        }
         strncpy(bridge_msg.text, msg.text, sizeof(bridge_msg.text) - 1);
         bridge_msg.timestamp_ms = millis();
 
         _on_message(bridge_msg);
     }
+
+    // Also parse NodeInfo from runtime packets (nodes joining after config)
+    auto ni = mesh_proto::parse_node_info(buf, len);
+    if (ni.valid) {
+        _store_node_info(ni);
+    }
+}
+
+void MeshtasticTCP::_store_node_info(const mesh_proto::ParsedNodeInfo &ni) {
+    // Update existing entry or add new one
+    for (int i = 0; i < _node_count; i++) {
+        if (_nodes[i].id == ni.node_num) {
+            strncpy(_nodes[i].long_name, ni.long_name, sizeof(_nodes[i].long_name) - 1);
+            strncpy(_nodes[i].short_name, ni.short_name, sizeof(_nodes[i].short_name) - 1);
+            Serial.printf("[%s] Updated node %08x: %s (%s)\n", TAG,
+                          ni.node_num, ni.long_name, ni.short_name);
+            return;
+        }
+    }
+    if (_node_count < MAX_NODES) {
+        auto &e = _nodes[_node_count++];
+        e.id = ni.node_num;
+        strncpy(e.long_name, ni.long_name, sizeof(e.long_name) - 1);
+        strncpy(e.short_name, ni.short_name, sizeof(e.short_name) - 1);
+        Serial.printf("[%s] Learned node %08x: %s (%s)\n", TAG,
+                      ni.node_num, ni.long_name, ni.short_name);
+    }
+}
+
+const char* MeshtasticTCP::get_node_name(uint32_t node_id) const {
+    for (int i = 0; i < _node_count; i++) {
+        if (_nodes[i].id == node_id && _nodes[i].long_name[0]) {
+            return _nodes[i].long_name;
+        }
+    }
+    return nullptr;
 }
 
 void MeshtasticTCP::_send_heartbeat() {

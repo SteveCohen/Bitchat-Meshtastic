@@ -62,6 +62,12 @@ void BridgeManager::_on_meshtastic_message(const BridgeMessage &msg) {
     }
     _record_hash(h);
 
+    // Register sender name in identity mapper (from MeshtasticTCP's NodeInfo)
+    if (msg.sender.meshtastic_node_id && msg.sender.display_name[0]) {
+        _id_mapper.update_mesh_name(msg.sender.meshtastic_node_id,
+                                     msg.sender.display_name, nullptr);
+    }
+
     // Format the message for Bitchat
     char bridged_text[256];
     _format_bridged_text(msg, bridged_text, sizeof(bridged_text));
@@ -84,6 +90,12 @@ void BridgeManager::_on_bitchat_message(const BridgeMessage &msg) {
         return;
     }
     _record_hash(h);
+
+    // Register sender name in identity mapper (from bitchat announce nickname)
+    if (msg.sender.display_name[0] && msg.sender.has_bitchat_fingerprint()) {
+        _id_mapper.update_ble_name(msg.sender.bitchat_fingerprint,
+                                    msg.sender.display_name);
+    }
 
     // Format the message for Meshtastic
     char bridged_text[256];
@@ -123,9 +135,17 @@ void BridgeManager::_record_hash(uint32_t hash) {
 
 void BridgeManager::_format_bridged_text(const BridgeMessage &msg, char *out, int out_len) {
     const char *prefix = (msg.origin == MessageOrigin::MESHTASTIC) ? MSG_PREFIX_MESH : MSG_PREFIX_BLE;
-    const char *sender = msg.sender.display_name[0] ? msg.sender.display_name : "unknown";
 
-    // Phase 1: simple prefix + sender + text
-    // Phase 2: use IdentityMapper for richer identity mapping
+    // Resolve sender name: try identity mapper first, then message display_name
+    const char *sender = nullptr;
+    if (msg.origin == MessageOrigin::MESHTASTIC && msg.sender.meshtastic_node_id) {
+        sender = _id_mapper.get_mesh_name(msg.sender.meshtastic_node_id);
+    } else if (msg.origin == MessageOrigin::BITCHAT && msg.sender.has_bitchat_fingerprint()) {
+        sender = _id_mapper.get_ble_name(msg.sender.bitchat_fingerprint);
+    }
+    if (!sender) {
+        sender = msg.sender.display_name[0] ? msg.sender.display_name : "unknown";
+    }
+
     snprintf(out, out_len, "%s%s: %s", prefix, sender, msg.text);
 }

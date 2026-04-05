@@ -28,6 +28,25 @@ private:
     // Packet ID counter
     uint32_t _packet_id_counter = 0;
 
+    // Node directory: maps node IDs to user names (learned during config)
+    struct NodeEntry {
+        uint32_t id = 0;
+        char long_name[40] = {};
+        char short_name[5] = {};
+    };
+    static constexpr int MAX_NODES = 32;
+    NodeEntry _nodes[MAX_NODES] = {};
+    int _node_count = 0;
+
+    void _store_node_info(const mesh_proto::ParsedNodeInfo &ni);
+
+public:
+    // Look up a node's long_name by ID. Returns nullptr if unknown.
+    const char* get_node_name(uint32_t node_id) const;
+    uint32_t my_node_id() const { return _my_node_id; }
+
+private:
+
     // Heartbeat tracking
     unsigned long _last_heartbeat_ms = 0;
 

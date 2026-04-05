@@ -764,6 +764,11 @@ void BitchatBLE::_handle_announce(PeerSession *peer, const uint8_t *payload,
                   TAG, sender_id[0], sender_id[1], sender_id[2], sender_id[3],
                   nick_str, (noise_pub && noise_pub_len == 32) ? "yes" : "no");
 
+    // Store nickname on peer session for later use in message attribution
+    if (nick_str[0]) {
+        strncpy(peer->nickname, nick_str, sizeof(peer->nickname) - 1);
+    }
+
     peer->announce_rcvd = true;
 
     // Send our announce back if we haven't yet
@@ -806,17 +811,24 @@ void BitchatBLE::_handle_message(PeerSession * /*peer*/, const uint8_t *payload,
 
     memcpy(msg.sender.bitchat_fingerprint, sender_id, BITCHAT_SENDER_ID_LEN);
 
-    const uint8_t *nick_val = nullptr;
-    uint8_t nick_len = 0;
-    _tlv_find(payload, payload_len, BITCHAT_TLV_NICKNAME, &nick_val, &nick_len);
-
-    if (nick_val && nick_len > 0) {
-        int n = (nick_len < sizeof(msg.sender.display_name) - 1) ? nick_len : sizeof(msg.sender.display_name) - 1;
-        memcpy(msg.sender.display_name, nick_val, n);
-        msg.sender.display_name[n] = '\0';
+    // Resolve display name: prefer peer's stored nickname from announce,
+    // then try inline nickname TLV, then fall back to hex fingerprint
+    if (peer && peer->nickname[0]) {
+        strncpy(msg.sender.display_name, peer->nickname,
+                sizeof(msg.sender.display_name) - 1);
     } else {
-        snprintf(msg.sender.display_name, sizeof(msg.sender.display_name),
-                 "%02x%02x%02x%02x", sender_id[0], sender_id[1], sender_id[2], sender_id[3]);
+        const uint8_t *nick_val = nullptr;
+        uint8_t nick_len = 0;
+        _tlv_find(payload, payload_len, BITCHAT_TLV_NICKNAME, &nick_val, &nick_len);
+
+        if (nick_val && nick_len > 0) {
+            int n = (nick_len < sizeof(msg.sender.display_name) - 1) ? nick_len : sizeof(msg.sender.display_name) - 1;
+            memcpy(msg.sender.display_name, nick_val, n);
+            msg.sender.display_name[n] = '\0';
+        } else {
+            snprintf(msg.sender.display_name, sizeof(msg.sender.display_name),
+                     "%02x%02x%02x%02x", sender_id[0], sender_id[1], sender_id[2], sender_id[3]);
+        }
     }
 
     Serial.printf("[%s] Message from %s: \"%s\"\n", TAG, msg.sender.display_name, msg.text);
@@ -925,9 +937,15 @@ void BitchatBLE::_handle_encrypted(PeerSession *peer,
             memcpy(msg.text, content_val, cl);
             msg.text[cl] = '\0';
             memcpy(msg.sender.bitchat_fingerprint, peer->peer_id, BITCHAT_SENDER_ID_LEN);
-            snprintf(msg.sender.display_name, sizeof(msg.sender.display_name),
-                     "%02x%02x%02x%02x", peer->peer_id[0], peer->peer_id[1],
-                     peer->peer_id[2], peer->peer_id[3]);
+            // Use stored nickname from announce, fall back to hex fingerprint
+            if (peer->nickname[0]) {
+                strncpy(msg.sender.display_name, peer->nickname,
+                        sizeof(msg.sender.display_name) - 1);
+            } else {
+                snprintf(msg.sender.display_name, sizeof(msg.sender.display_name),
+                         "%02x%02x%02x%02x", peer->peer_id[0], peer->peer_id[1],
+                         peer->peer_id[2], peer->peer_id[3]);
+            }
 
             Serial.printf("[%s] Private msg from %s: \"%s\"\n", TAG, msg.sender.display_name, msg.text);
             if (_on_message) _on_message(msg);

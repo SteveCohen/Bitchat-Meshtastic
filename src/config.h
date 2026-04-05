@@ -92,6 +92,11 @@
 #define BITCHAT_FRAG_REASSEMBLY  4   // Concurrent reassembly slots
 #define BITCHAT_FRAG_TIMEOUT_MS  (10 * 1000)  // 10s reassembly timeout
 
+// ── Identity mapping ──────────────────────────────────
+#define MAX_IDENTITY_ENTRIES        16    // Max cached names per side (mesh + BLE)
+#define IDENTITY_NVS_NAMESPACE      "idmap"
+#define IDENTITY_SAVE_DEBOUNCE_MS   (30 * 1000)  // Min interval between NVS writes
+
 // ── Deduplication ─────────────────────────────────────
 #define DEDUP_CACHE_SIZE   64       // Ring buffer of recent message hashes
 #define DEDUP_TTL_MS       (60 * 1000)  // Ignore duplicates within 60 s
