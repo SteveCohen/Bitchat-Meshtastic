@@ -269,6 +269,47 @@ The cap isn't about memory — 32 identities use only 7.5KB. It exists because o
 
 You can raise `VIRT_ID_MAX_SLOTS` in `config.h` if your use case genuinely has more than 32 concurrent Meshtastic users, but the BLE announce overhead becomes the practical limit well before memory does.
 
+#### BLE connections vs. virtual identities
+
+It's important to understand that BLE connections and virtual identities are independent axes, and the BLE connection limit is the tighter constraint on how many people can actually use the bridge:
+
+```
+                          ┌─────────────────────────────────────────────────┐
+Meshtastic                │             ESP32 Bridge                        │             Bitchat
+LoRa Mesh                 │                                                 │             BLE Mesh
+                          │  ┌─────────────────────────────┐                │
+  Alice ─────┐            │  │  Virtual Identities (heap)  │                │
+  Bob ───────┤            │  │                             │  BLE conn 1 ──────── Phone A
+  Carol ─────┤◄── TCP ───►│  │  "Alice"  "Bob"  "Carol"   │  BLE conn 2 ──────── Phone B
+  Dave ──────┤            │  │  "Dave"   "Eve"  ...       │  BLE conn 3 ──────── Phone C
+  Eve ───────┘            │  │  (up to 32, shared over     │  BLE conn 4 ──────── Phone D
+                          │  │   all BLE connections)      │                │
+                          │  └─────────────────────────────┘                │
+                          └─────────────────────────────────────────────────┘
+```
+
+**Virtual identities** are a logical construct — they're just keypairs and metadata in memory. They don't consume BLE connections. All 32 virtual identities share the same physical BLE connections, sending packets with different `sender_id` fields over the same GATT characteristic.
+
+**BLE connections** are the physical radio links to nearby phones. The ESP32 NimBLE stack supports a limited number of concurrent connections. The bridge is configured for **4 simultaneous connections** (`BITCHAT_MAX_CONNECTIONS`), acting as both central and peripheral:
+
+| Limit | ESP32-S3 | ESP32-C6 | Why |
+|-------|----------|----------|-----|
+| NimBLE max connections | 9 | 9 | Firmware-configurable, but each connection consumes ~1.5KB RAM + radio scheduling slots |
+| Configured limit | 4 | 4 | Default. Higher values reduce per-connection throughput due to radio time-sharing |
+| Practical sweet spot | 3-5 | 3-4 | Balances reach vs. per-connection bandwidth |
+
+**What this means in practice:**
+
+- **Only 4 Bitchat phones can connect to the bridge at once.** A 5th phone will see the bridge advertising but can't connect until one of the 4 disconnects. However, the connected phones can relay packets to further-away Bitchat peers via the BLE mesh gossip protocol (TTL-based flooding), extending reach beyond direct connections.
+
+- **All 32 virtual identities are visible to all 4 connected phones.** Each phone sees up to 32 Meshtastic users appear as distinct Bitchat peers. The identities multiplex over the physical connections — no per-identity connection is needed.
+
+- **Throughput scales with connections, not identities.** Each BLE connection operates at roughly 10-20KB/s with a 512-byte MTU and typical 30-50ms connection intervals. With 4 connections, total BLE throughput is ~40-80KB/s. Announces for 32 identities (180 bytes each, every 60s, to 4 peers) consume ~380 bytes/second — under 1% of available bandwidth.
+
+- **More connections = less bandwidth per connection.** The ESP32 has a single BLE radio. NimBLE schedules connection events across all active connections in a round-robin fashion. Going from 4 to 8 connections roughly halves the throughput available to each connection. For a bridge that's mostly forwarding short text messages, 4 connections is a good balance.
+
+- **You can raise `BITCHAT_MAX_CONNECTIONS`** in `config.h` up to 9, but beyond 5-6 connections you'll notice increased latency on individual messages as the radio has less time per connection. The Meshtastic side (TCP over WiFi) has no such limit — it can handle traffic from the entire LoRa mesh.
+
 ## Dependencies
 
 - **[NimBLE-Arduino](https://github.com/h2zero/NimBLE-Arduino)** ^1.4.3 - BLE stack
