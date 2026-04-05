@@ -253,6 +253,22 @@ When memory runs low (below 25KB free), the bridge sheds identities by evicting 
 
 Messages continue to flow through the bridge identity with `[M]` prefix attribution — no messages are lost, they just appear under the shared bridge name until the user becomes active again and a new virtual identity is allocated.
 
+#### Why 32 identities? Why not unlimited?
+
+The cap isn't about memory — 32 identities use only 7.5KB. It exists because of real constraints in the radio and BLE layers:
+
+**BLE announce flooding.** Every virtual identity re-announces itself every 60 seconds to stay visible to Bitchat peers. Each announce is a ~180-byte signed packet sent to every connected BLE peer. At 32 identities with 4 BLE connections, that's 128 announce packets per minute. BLE 4.2 on the ESP32 tops out around 200-300 small packets/second under ideal conditions, but real-world throughput with connection event scheduling is much lower. Beyond 32 identities, announce traffic alone would start crowding out actual messages.
+
+**Bitchat peer list usability.** Bitchat apps display every announced peer in a contact list. A bridge that injects 100 virtual identities would flood the peer list on every nearby phone, burying real local BLE users under a wall of Meshtastic names. 32 is already a lot — it covers the realistic number of active participants in a Meshtastic channel.
+
+**Meshtastic channel capacity.** Meshtastic LoRa channels on default long-range settings (Long Fast, SF11) support roughly 10-20 messages per minute before duty cycle limits kick in. Even on Short Fast with higher throughput, sustained traffic from more than ~30 unique senders is unusual. The cap matches the practical ceiling of how many distinct users you'd actually see active in a Meshtastic channel window.
+
+**Loop latency.** The bridge processes announces, messages, memory checks, and reconnection logic in a single-threaded `loop()`. More identities means more work per iteration — keypair derivation on first creation takes ~5ms (HKDF + Curve25519 scalar multiply), and each announce cycle with 200ms stagger delays adds 200ms * N to the loop. At 32 identities that's 6.4 seconds of announce stagger per cycle, which is acceptable within a 60-second interval but would become dominant at higher counts.
+
+**What happens when you hit the cap.** If a 33rd Meshtastic user sends a message while 32 identities are active, the bridge evicts the least-recently-used identity (with farewell notifications) and allocates a new one for the incoming user. The evicted user's messages still bridge through the shared bridge name with `[M]` prefix. If they send again later, they get a fresh virtual identity — with the same keypair as before (deterministic), so Bitchat peers recognize them as the same person.
+
+You can raise `VIRT_ID_MAX_SLOTS` in `config.h` if your use case genuinely has more than 32 concurrent Meshtastic users, but the BLE announce overhead becomes the practical limit well before memory does.
+
 ## Dependencies
 
 - **[NimBLE-Arduino](https://github.com/h2zero/NimBLE-Arduino)** ^1.4.3 - BLE stack
