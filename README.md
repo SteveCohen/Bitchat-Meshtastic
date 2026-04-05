@@ -26,7 +26,7 @@ The bridge autodiscovers and connects to a Meshtastic node via mDNS (`meshtastic
 
 ## Use Cases
 
-**Off-grid events and gatherings** — At a music festival, campout, or field day, some people have Meshtastic radios for long-range comms while others only have phones running Bitchat. Drop a bridge on a picnic table and both groups can talk to each other without anyone installing new apps.
+**Off-grid events and gatherings** — At a music festival, campout, or field day, some people have Meshtastic radios for long-range comms while others only have phones running Bitchat. Drop a bridge on a picnic table (AP mode, battery-powered, no WiFi router needed) and both groups can talk to each other without anyone installing new apps.
 
 **Emergency and disaster response** — After a natural disaster knocks out cell towers, relief teams using Meshtastic LoRa radios can coordinate with nearby civilians using Bitchat on their phones over BLE. The bridge lets a single ESP32 connect both networks at a command post or shelter.
 
@@ -75,7 +75,7 @@ git clone https://github.com/SteveCohen/Bitchat-Meshtastic.git
 cd Bitchat-Meshtastic
 ```
 
-Edit `src/config.h` with your WiFi credentials:
+Edit `src/config.h`. The only required settings are WiFi credentials:
 
 ```cpp
 #define WIFI_SSID          "your-ssid"
@@ -91,6 +91,7 @@ That's it for most setups. The bridge autodiscovers your Meshtastic node via mDN
 Other optional settings:
 
 ```cpp
+#define WIFI_MODE          "AUTO"            // "STA", "AP", or "AUTO" (see below)
 #define MESHTASTIC_PORT    4403              // TCP API port (default 4403)
 #define BRIDGE_NAME        "BitBridge"       // Name shown in Bitchat
 #define MESHTASTIC_CHANNEL 0                 // Meshtastic channel index
@@ -135,6 +136,49 @@ NTP sync OK (epoch: 1712345678000)
 [Bridge] Bridge started
 [BLE] Initialized, advertising as BitBridge
 ```
+
+### AP Mode (battery / remote operation)
+
+For field use without existing WiFi infrastructure, the bridge can host its own WiFi network. The Meshtastic node joins this network as a client, and the two devices communicate over their own private LAN — powered by batteries, no router needed.
+
+```
+                    ┌─── WiFi AP ───┐
+┌──────────────┐    │ ┌───────────┐ │    ┌──────────────┐
+│  Meshtastic  │◄───┼►│  ESP32    │◄┼─BLE──►│   Bitchat    │
+│  LoRa Radio  │WiFi│ │  Bridge   │ │    │   Phones     │
+└──────────────┘    │ │ (AP mode) │ │    └──────────────┘
+                    │ └───────────┘ │
+     battery ──────►│  192.168.4.x  │
+                    └───────────────┘
+```
+
+**Setup:**
+
+1. Set `WIFI_MODE` in `config.h`:
+
+```cpp
+#define WIFI_MODE        "AP"              // Host a network
+#define WIFI_AP_SSID     "BitBridge"       // Network name
+#define WIFI_AP_PASSWORD "bitbridge32"     // Min 8 chars, or "" for open
+```
+
+2. Configure your Meshtastic node to connect to the `BitBridge` WiFi network (Settings > Network > WiFi > SSID/Password). Enable TCP API on port 4403.
+
+3. Flash and power both devices. The bridge creates the network, the Meshtastic node joins and gets a DHCP address (192.168.4.x), and the bridge finds it via mDNS or you can set `MESHTASTIC_HOST` to a fixed IP.
+
+**WiFi modes:**
+
+| Mode | `WIFI_MODE` | Behavior |
+|------|-------------|----------|
+| Station | `"STA"` | Connect to an existing WiFi network (home/office). Default. |
+| Access Point | `"AP"` | Create a WiFi network. No internet, no NTP — timestamps use `millis()`. |
+| Auto | `"AUTO"` | Try STA first; if it fails (no network in range), automatically fall back to AP. Best for devices that move between field and home. |
+
+**Notes for AP mode:**
+- No internet access — NTP time sync is unavailable, so bitchat packet timestamps use `millis()` (time since boot) rather than wall-clock time. This is fine for message ordering but means timestamps won't match between reboots.
+- The Meshtastic node must be configured to connect to the bridge's WiFi network and have TCP API enabled.
+- The bridge runs a DHCP server (built into ESP32 `softAP`) on the 192.168.4.0/24 subnet.
+- mDNS still works on the AP network, so `meshtastic.local` resolution works if the Meshtastic node supports it.
 
 ## Architecture
 
@@ -184,6 +228,9 @@ All constants are in `src/config.h`:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
+| `WIFI_MODE` | `"AUTO"` | `"STA"`, `"AP"`, or `"AUTO"` |
+| `WIFI_AP_SSID` | `"BitBridge"` | Network name in AP mode |
+| `WIFI_AP_PASSWORD` | `"bitbridge32"` | AP password (min 8 chars, `""` for open) |
 | `MESHTASTIC_HOST` | `"meshtastic.local"` | Meshtastic node address (mDNS or IP) |
 | `MESHTASTIC_PORT` | `4403` | Meshtastic TCP API port |
 | `BRIDGE_NAME` | `"BitBridge"` | Name shown to Bitchat peers |

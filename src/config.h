@@ -1,8 +1,24 @@
 #pragma once
 
 // ── WiFi ──────────────────────────────────────────────
+// Mode: "STA" = connect to existing network (default)
+//       "AP"  = host a network (for battery/remote operation)
+//       "AUTO"= try STA first, fall back to AP if connection fails
+#define WIFI_MODE          "AUTO"
+
+// Station mode (STA): connect to this network
 #define WIFI_SSID          "your-ssid"
 #define WIFI_PASSWORD      "your-password"
+
+// Access point mode (AP): create this network
+// The Meshtastic node connects to this network as a WiFi client.
+#define WIFI_AP_SSID       "BitBridge"
+#define WIFI_AP_PASSWORD   "bitbridge32"       // min 8 chars; "" for open network
+#define WIFI_AP_CHANNEL    1
+#define WIFI_AP_MAX_CLIENTS 4
+#define WIFI_AP_IP         "192.168.4.1"       // Bridge IP in AP mode
+#define WIFI_AP_GATEWAY    "192.168.4.1"
+#define WIFI_AP_SUBNET     "255.255.255.0"
 
 // ── Meshtastic node (TCP interface) ───────────────────
 // Set MESHTASTIC_HOST to an IP address or mDNS hostname.
