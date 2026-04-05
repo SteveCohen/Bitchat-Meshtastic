@@ -96,8 +96,14 @@
 #define BITCHAT_FRAG_TIMEOUT_MS  (10 * 1000)  // 10s reassembly timeout
 
 // ── Virtual identities (Phase 2b) ─────────────────────
-#define MAX_VIRTUAL_IDENTITIES      8     // Max concurrent Meshtastic users as bitchat peers
-#define VIRTUAL_IDENTITY_TIMEOUT_MS (10 * 60 * 1000)  // Expire after 10 min inactive
+// Identities scale dynamically based on available heap memory.
+// Each identity uses ~230 bytes of heap.
+#define VIRT_ID_INITIAL_SLOTS       4     // Pre-allocated slots at boot
+#define VIRT_ID_MAX_SLOTS           32    // Absolute upper limit
+#define VIRT_ID_HEAP_RESERVE_BYTES  (40 * 1024)  // Keep at least 40KB free heap
+#define VIRT_ID_HEAP_CRITICAL_BYTES (25 * 1024)  // Below this, start evicting
+#define VIRT_ID_TIMEOUT_MS          (10 * 60 * 1000)  // Expire after 10 min inactive
+#define VIRT_ID_MEMORY_CHECK_MS     (10 * 1000)       // Check heap pressure every 10s
 #define VIRTUAL_ANNOUNCE_STAGGER_MS 200   // Delay between virtual identity announces
 
 // ── Identity mapping ──────────────────────────────────

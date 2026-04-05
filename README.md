@@ -16,7 +16,7 @@ The bridge autodiscovers and connects to a Meshtastic node via mDNS (`meshtastic
 ### Key Features
 
 - **Bidirectional message bridging** between Meshtastic and Bitchat networks
-- **Virtual identities**: Each Meshtastic user appears as a distinct Bitchat peer with their own cryptographic identity (deterministic HKDF-derived keypairs)
+- **Virtual identities**: Each Meshtastic user appears as a distinct Bitchat peer with their own cryptographic identity, scaling dynamically based on available memory with graceful eviction
 - **Name resolution**: Learns user names from Meshtastic NodeInfo and Bitchat announce packets; persists across reboots via NVS
 - **Noise XX encryption**: Full Noise protocol handshake support for encrypted Bitchat sessions
 - **Ed25519 signatures**: All outgoing packets are signed (including virtual identity packets)
@@ -174,8 +174,11 @@ All constants are in `src/config.h`:
 | `MESHTASTIC_PORT` | `4403` | Meshtastic TCP API port |
 | `BRIDGE_NAME` | `"BitBridge"` | Name shown to Bitchat peers |
 | `MESHTASTIC_CHANNEL` | `0` | Meshtastic channel to bridge |
-| `MAX_VIRTUAL_IDENTITIES` | `8` | Max concurrent virtual Bitchat peers |
-| `VIRTUAL_IDENTITY_TIMEOUT_MS` | `10 min` | Expire idle virtual identities |
+| `VIRT_ID_INITIAL_SLOTS` | `4` | Pre-allocated virtual identity slots |
+| `VIRT_ID_MAX_SLOTS` | `32` | Absolute upper limit on virtual identities |
+| `VIRT_ID_HEAP_RESERVE_BYTES` | `40KB` | Minimum free heap before refusing new identities |
+| `VIRT_ID_HEAP_CRITICAL_BYTES` | `25KB` | Below this, actively evict idle identities |
+| `VIRT_ID_TIMEOUT_MS` | `10 min` | Expire idle virtual identities |
 | `MAX_IDENTITY_ENTRIES` | `16` | Cached names per side (NVS-persisted) |
 | `BITCHAT_MAX_CONNECTIONS` | `4` | Max simultaneous BLE connections |
 | `BITCHAT_ANNOUNCE_INTERVAL_MS` | `60s` | Re-announce interval |
@@ -224,6 +227,17 @@ This means:
 - Virtual identities survive bridge reboots (deterministic, not stored)
 - Each virtual identity announces, signs packets, and appears as a real Bitchat peer
 - Currently uses plaintext messages (Option A); encrypted DMs per virtual identity is a future option
+
+#### Dynamic scaling and memory management
+
+The number of virtual identities scales automatically based on available heap memory rather than using a fixed slot count. The bridge starts with 4 slots and grows up to 32 as needed, as long as free heap stays above 40KB.
+
+When memory runs low (below 25KB free), the bridge sheds identities by evicting the least-recently-used ones first. Both networks are notified:
+
+- **Bitchat peers** see a farewell message from the departing identity: *"Alice has gone idle and left the chat. New messages from them will appear under BitBridge."*
+- **Meshtastic users** see: *"Bridge released identity for Alice (memory pressure). Messages will still be bridged under BitBridge."*
+
+Messages continue to flow through the bridge identity with `[M]` prefix attribution — no messages are lost, they just appear under the shared bridge name until the user becomes active again and a new virtual identity is allocated.
 
 ## Dependencies
 

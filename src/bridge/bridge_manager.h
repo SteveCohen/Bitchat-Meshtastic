@@ -30,6 +30,10 @@ private:
 
     // Periodic virtual announce tracking
     uint32_t _last_virt_announce_ms = 0;
+    uint32_t _last_mem_check_ms = 0;
+
+    // Send farewell notifications when a virtual identity is evicted
+    void _on_identity_evicted(const VirtualIdentity &vi);
 
     uint32_t _msg_count = 0;
 

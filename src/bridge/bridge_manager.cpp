@@ -12,6 +12,11 @@ bool BridgeManager::begin() {
 
     _id_mapper.load();
 
+    // Register eviction callback for farewell notifications
+    _virt_registry.set_evict_callback([this](const VirtualIdentity &vi) {
+        _on_identity_evicted(vi);
+    });
+
     // Wire up callbacks
     _mesh.on_message([this](const BridgeMessage &msg) {
         _on_meshtastic_message(msg);
@@ -45,14 +50,17 @@ void BridgeManager::loop() {
     // Periodic re-announce of active virtual identities
     if (_master_kp && (millis() - _last_virt_announce_ms) > BITCHAT_ANNOUNCE_INTERVAL_MS) {
         _last_virt_announce_ms = millis();
-        for (int i = 0; i < MAX_VIRTUAL_IDENTITIES; i++) {
-            VirtualIdentity *vi = _virt_registry.slot(i);
-            if (vi && vi->active) {
-                _bitchat.announce_virtual(&vi->keypair,
-                    vi->display_name[0] ? vi->display_name : nullptr);
-                delay(VIRTUAL_ANNOUNCE_STAGGER_MS);
-            }
+        for (const auto &vi : _virt_registry.all()) {
+            _bitchat.announce_virtual(&vi.keypair,
+                vi.display_name[0] ? vi.display_name : nullptr);
+            delay(VIRTUAL_ANNOUNCE_STAGGER_MS);
         }
+    }
+
+    // Periodic memory pressure check — shed identities if heap is low
+    if (millis() - _last_mem_check_ms > VIRT_ID_MEMORY_CHECK_MS) {
+        _last_mem_check_ms = millis();
+        _virt_registry.check_memory_pressure();
     }
 
     // Reconnect Meshtastic if needed
@@ -189,4 +197,31 @@ void BridgeManager::_format_bridged_text(const BridgeMessage &msg, char *out, in
     }
 
     snprintf(out, out_len, "%s%s: %s", prefix, sender, msg.text);
+}
+
+// ── Identity eviction ───────────────────────────────
+
+void BridgeManager::_on_identity_evicted(const VirtualIdentity &vi) {
+    const char *name = vi.display_name[0] ? vi.display_name : "a Meshtastic user";
+
+    // Notify Bitchat peers: send a farewell message as the departing identity
+    char ble_msg[128];
+    snprintf(ble_msg, sizeof(ble_msg),
+             "%s has gone idle and left the chat. New messages from them will appear under %s.",
+             name, BRIDGE_NAME);
+    _bitchat.send_text_as(ble_msg, &vi.keypair);
+
+    // Notify Meshtastic: let the user know their identity was released
+    char mesh_msg[128];
+    snprintf(mesh_msg, sizeof(mesh_msg),
+             "[B] Bridge released identity for %s (memory pressure). "
+             "Messages will still be bridged under %s.",
+             name, BRIDGE_NAME);
+    _mesh.send_text(mesh_msg);
+
+    Serial.printf("[%s] Evicted virtual identity for %s (node %08x), "
+                  "heap=%dKB, remaining=%d\n",
+                  TAG, name, vi.mesh_node_id,
+                  (int)(esp_get_free_heap_size() / 1024),
+                  _virt_registry.count() - 1);
 }
