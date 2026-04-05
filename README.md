@@ -23,6 +23,163 @@ The bridge autodiscovers and connects to a Meshtastic node via mDNS (`meshtastic
 - **BLE mesh gossip**: Relays packets between Bitchat peers with TTL-based flooding and deduplication
 - **Packet fragmentation**: Automatic fragmentation/reassembly for messages exceeding BLE MTU
 - **Dual-role BLE**: Acts as both BLE central and peripheral simultaneously
+- **Geohash scoping**: Optional geographic message scoping — high-precision geohashes stay on the local BLE mesh ("block talk"), low-precision geohashes get bridged to Meshtastic ("town square")
+
+## Geohash Scoping
+
+### The problem
+
+Bitchat BLE and Meshtastic LoRa operate at fundamentally different scales. A BLE mesh covers a city block (~30-50m per hop). A Meshtastic LoRa mesh covers a city or a mountain range (5-20km+). Without any scoping, *every* BLE message gets forwarded to the entire LoRa network, and every LoRa message floods into the local BLE mesh. There's no way for people on a BLE block to have a local conversation that doesn't broadcast to the region, and no way for a Meshtastic user to tell whether a message was meant for the neighborhood or the whole network.
+
+### The idea: geohash precision = message scope
+
+A [geohash](https://en.wikipedia.org/wiki/Geohash) is a string that encodes a geographic area. The key property is that **shorter geohashes cover larger areas**:
+
+| Geohash | Precision | Area covered | Conceptual scope |
+|---------|-----------|--------------|------------------|
+| `9q8y` | 4 chars | ~40km x 20km | City / LoRa range |
+| `9q8yy` | 5 chars | ~5km x 5km | Neighborhood |
+| `9q8yyk` | 6 chars | ~1.2km x 0.6km | A few blocks |
+| `9q8yyk8` | 7 chars | ~150m x 150m | One block / BLE range |
+| `9q8yyk8v` | 8 chars | ~38m x 19m | A single building |
+
+This maps naturally to the BLE/Meshtastic range difference. The bridge uses a **precision threshold** to decide what gets forwarded:
+
+```
+                        BRIDGE_GEOHASH_PRECISION = 4
+                                    │
+                   bridged to       │     stays on local
+                   Meshtastic       │     BLE mesh only
+                   (town square)    │     (block talk)
+                                    │
+   ◄────────────────────────────────┼────────────────────────────►
+   precision 1    2    3    4       │    5    6    7    8
+   (continent)                      │              (building)
+```
+
+- **Messages with geohash precision <= threshold** (4 chars or fewer) are forwarded to Meshtastic. These are "town square" messages meant for the wider region.
+- **Messages with geohash precision > threshold** (5+ chars) stay on the local BLE mesh. These are "block talk" — neighborhood conversations that don't need to go regional.
+- **Messages with no geohash** are always forwarded. This preserves backward compatibility with existing Bitchat clients that don't set geohashes.
+
+### Why this is spiritually correct
+
+Bitchat is local-first. Your BLE mesh is your block, your building, your campsite. It's the people physically near you. Meshtastic extends that to the town, the valley, the mountain range — but that wider reach should be intentional, not automatic.
+
+Geohash scoping preserves this by making **local the default and regional the opt-in**. A Bitchat user on your block who tags their message with a fine-grained geohash (7-8 chars) is saying "this is for the neighborhood." The bridge respects that and keeps it local. A user who tags with a coarse geohash (4 chars) is saying "this is for the town square" — and the bridge forwards it to Meshtastic.
+
+No internet needed. No TOR needed. Meshtastic *is* the wide-area transport, scoped by geographic intention. The bridge is the boundary between your local community and the regional network, and geohash precision is the knob that controls where that boundary sits.
+
+### Configuration
+
+Three settings in `src/config.h` control geohash scoping:
+
+```cpp
+#define GEOHASH_SCOPE_ENABLED       false       // Master toggle
+#define BRIDGE_GEOHASH              ""          // Bridge location, e.g. "9q8yyk"
+#define BRIDGE_GEOHASH_PRECISION    4           // Messages with precision > this stay BLE-only
+```
+
+**To enable geohash scoping**, set all three:
+
+```cpp
+#define GEOHASH_SCOPE_ENABLED       true
+#define BRIDGE_GEOHASH              "9q8yyk"    // Your location's geohash
+#define BRIDGE_GEOHASH_PRECISION    4           // 4 = city-scale bridging
+```
+
+You can look up your geohash at [geohash.org](http://geohash.org/) or any geohash tool — enter your coordinates and use at least 6 characters of precision.
+
+**When disabled** (the default), all messages are bridged unconditionally, exactly as before. You can deploy this firmware without changing any behavior.
+
+### How to choose your precision threshold
+
+The threshold controls the boundary between "local" and "regional." Here are some practical guidelines:
+
+| `BRIDGE_GEOHASH_PRECISION` | What gets bridged to Meshtastic | What stays BLE-only | Good for |
+|---|---|---|---|
+| **3** | Messages scoped to ~150km+ areas | Anything city-scale or smaller | Very large LoRa networks spanning multiple cities |
+| **4** (default) | Messages scoped to ~40km areas | Neighborhood and block conversations | Most setups. Matches typical Meshtastic range. |
+| **5** | Messages scoped to ~5km areas | Block-level conversations | Dense urban areas where you want neighborhood-scale bridging |
+| **6** | Messages scoped to ~1km areas | Building-level conversations | Campus or building mesh where blocks are distinct communities |
+
+**Rule of thumb**: set the threshold to match your Meshtastic network's practical range. If your LoRa nodes can reliably reach 20km, precision 4 (40km x 20km) is appropriate. If you're in a hilly area where LoRa only reaches 5km, precision 5 (5km x 5km) might be better.
+
+### Examples
+
+#### Example 1: Festival with block-level privacy
+
+A music festival spans several fields. Each field has a cluster of Bitchat users. One bridge serves the whole site, connected to a Meshtastic network that covers the festival grounds and parking areas.
+
+```cpp
+#define GEOHASH_SCOPE_ENABLED       true
+#define BRIDGE_GEOHASH              "9q8yyk"
+#define BRIDGE_GEOHASH_PRECISION    4
+```
+
+- **Main Stage field**: Users chat with geohash `"9q8yyk8v"` (8 chars, building-level). Their banter about the current band stays on the local BLE mesh. People at other stages don't see it.
+- **Lost and found announcement**: A user sends with geohash `"9q8y"` (4 chars, festival-wide). The bridge forwards this to Meshtastic. Everyone on the LoRa network sees it.
+- **Legacy Bitchat user**: Someone with an older app that doesn't set geohashes sends "Has anyone seen my dog?" — no geohash means it gets bridged to Meshtastic by default. No one is silenced by the new feature.
+
+#### Example 2: Neighborhood mesh with regional backbone
+
+A neighborhood runs a few Meshtastic nodes on rooftops for resilient comms. Each block has people using Bitchat on their phones. A bridge on each block connects the two.
+
+```
+Block A (Bridge A, geohash "dp3wt7")     Block B (Bridge B, geohash "dp3wt9")
+  ┌──────────────────────┐                  ┌──────────────────────┐
+  │  BLE mesh: 8 phones  │                  │  BLE mesh: 5 phones  │
+  │  Local chat stays    ├──── Meshtastic ──┤  Local chat stays    │
+  │  on Block A          │   LoRa backbone  │  on Block B          │
+  └──────────────────────┘                  └──────────────────────┘
+```
+
+```cpp
+// Both bridges use the same threshold, different geohashes
+#define GEOHASH_SCOPE_ENABLED       true
+#define BRIDGE_GEOHASH              "dp3wt7"   // (or "dp3wt9" for Bridge B)
+#define BRIDGE_GEOHASH_PRECISION    5
+```
+
+- **Block A gossip** (geohash `"dp3wt7k"`, 7 chars): Stays on Block A's BLE mesh. Bridge A doesn't forward it. Block B never sees it.
+- **Neighborhood alert** (geohash `"dp3wt"`, 5 chars): Both bridges forward to Meshtastic. Everyone on both blocks sees it.
+- **City-wide emergency** (geohash `"dp3w"`, 4 chars): Forwarded by both bridges. Reaches the entire Meshtastic network.
+
+#### Example 3: Backward-compatible deployment
+
+You want to try the firmware but aren't ready to commit to geohash scoping. Just don't enable it:
+
+```cpp
+#define GEOHASH_SCOPE_ENABLED       false      // Default — everything bridged
+#define BRIDGE_GEOHASH              ""
+#define BRIDGE_GEOHASH_PRECISION    4
+```
+
+All messages flow both directions unconditionally, exactly as before. You can enable scoping later by changing one line and reflashing.
+
+### What Meshtastic messages look like on BLE
+
+When a Meshtastic message arrives at the bridge, it enters the BLE mesh tagged with the bridge's geohash truncated to the configured precision. For example, if `BRIDGE_GEOHASH` is `"9q8yyk"` and `BRIDGE_GEOHASH_PRECISION` is `4`, Meshtastic messages enter BLE with geohash `"9q8y"`.
+
+This tells Bitchat clients that the message came from the wider regional network, not from the local block. Future Bitchat apps could use this to visually distinguish local vs. regional messages, or to filter by scope.
+
+### Serial log output
+
+When geohash scoping is enabled, the bridge logs its decisions:
+
+```
+[Bridge] Geohash '9q8yyk8' (precision 7 > 4): keeping local (BLE only)
+[Bridge] Geohash '9q8y' (precision 4 <= 4): forwarding to Meshtastic
+```
+
+Messages with no geohash are forwarded silently (no extra log line) to avoid noise.
+
+### Future directions
+
+- **GPS-based geohash**: Replace the compile-time `BRIDGE_GEOHASH` with a runtime GPS reading, so mobile bridges (e.g., in a backpack) automatically update their location.
+- **Geohash prefix matching**: Before bridging a region-scoped message, verify that its geohash prefix matches the bridge's. A message scoped to `"dp3w"` (Chicago) shouldn't be bridged by a San Francisco bridge with geohash `"9q8y"`.
+- **Per-channel scoping**: Different Meshtastic channels could have different precision thresholds — e.g., an emergency channel that bridges everything regardless of precision.
+- **Client-side scope display**: Bitchat apps could render local vs. regional messages differently based on the geohash TLV, or let users choose their sending scope with a slider.
+- **Runtime configuration**: Store geohash and precision in NVS, configurable via BLE characteristic or serial command, so you don't need to reflash to change settings.
 
 ## Use Cases
 
@@ -235,6 +392,9 @@ All constants are in `src/config.h`:
 | `MESHTASTIC_PORT` | `4403` | Meshtastic TCP API port |
 | `BRIDGE_NAME` | `"BitBridge"` | Name shown to Bitchat peers |
 | `MESHTASTIC_CHANNEL` | `0` | Meshtastic channel to bridge |
+| `GEOHASH_SCOPE_ENABLED` | `false` | Enable geohash-based message scoping |
+| `BRIDGE_GEOHASH` | `""` | Bridge location geohash (e.g. `"9q8yyk"`) |
+| `BRIDGE_GEOHASH_PRECISION` | `4` | Messages with precision > this stay BLE-only |
 | `VIRT_ID_INITIAL_SLOTS` | `4` | Pre-allocated virtual identity slots |
 | `VIRT_ID_MAX_SLOTS` | `32` | Absolute upper limit on virtual identities |
 | `VIRT_ID_HEAP_RESERVE_BYTES` | `40KB` | Minimum free heap before refusing new identities |
