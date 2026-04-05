@@ -96,6 +96,7 @@
 
 // ── Bitchat BLE parameters ───────────────────────────
 #define BITCHAT_MAX_CONNECTIONS     4
+#define BITCHAT_HANDSHAKE_TIMEOUT_MS (15 * 1000)  // Free peers stuck in handshake after 15s
 #define BITCHAT_ANNOUNCE_INTERVAL_MS (60 * 1000)  // Re-announce every 60s
 #define BITCHAT_SCAN_RSSI_MIN       (-70)
 #define BITCHAT_BLE_MTU             512

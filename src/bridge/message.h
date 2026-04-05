@@ -42,17 +42,18 @@ struct BridgeMessage {
     // Timestamp (millis since boot)
     uint32_t timestamp_ms = 0;
 
-    // Hash for deduplication (simple djb2 of text)
+    // Hash for deduplication (FNV-1a — better avalanche than djb2+XOR)
     uint32_t hash() const {
-        uint32_t h = 5381;
-        for (const char *p = text; *p; p++) {
-            h = ((h << 5) + h) + (uint8_t)*p;
-        }
-        // Mix in sender identity so same text from different senders isn't deduped
-        h ^= sender.meshtastic_node_id;
-        uint32_t bf = 0;
-        memcpy(&bf, sender.bitchat_fingerprint, 4);
-        h ^= bf;
+        uint32_t h = 2166136261u;  // FNV offset basis
+        auto mix = [&](uint8_t byte) { h ^= byte; h *= 16777619u; };
+
+        // Mix in text
+        for (const char *p = text; *p; p++) mix((uint8_t)*p);
+
+        // Mix in sender identity (node ID + fingerprint prefix)
+        for (int i = 0; i < 4; i++) mix((sender.meshtastic_node_id >> (i * 8)) & 0xFF);
+        for (int i = 0; i < 8; i++) mix(sender.bitchat_fingerprint[i]);
+
         return h;
     }
 };

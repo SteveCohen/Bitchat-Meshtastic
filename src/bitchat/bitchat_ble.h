@@ -20,6 +20,7 @@ class NimBLEAdvertisedDevice;
 struct PeerSession {
     bool     active       = false;
     uint16_t conn_handle  = 0;
+    uint32_t connect_time_ms = 0;  // millis() when peer was allocated
     uint8_t  ble_addr[6]  = {};  // peer BLE address
     uint8_t  peer_id[8]   = {};  // bitchat peer ID (from announce/first packet)
     bool     peer_id_known = false;

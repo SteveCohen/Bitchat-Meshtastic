@@ -78,14 +78,22 @@ void BridgeManager::loop() {
         _virt_registry.check_memory_pressure();
     }
 
-    // Reconnect Meshtastic if needed
+    // Reconnect Meshtastic with exponential backoff
     if (!_mesh.is_connected()) {
-        static unsigned long last_retry = 0;
-        if (millis() - last_retry > 5000) {
-            last_retry = millis();
-            Serial.printf("[%s] Reconnecting to Meshtastic...\n", TAG);
-            _mesh.connect();
+        if (millis() - _mesh_retry_ms > _mesh_retry_interval) {
+            _mesh_retry_ms = millis();
+            Serial.printf("[%s] Reconnecting to Meshtastic (backoff %ds)...\n",
+                          TAG, (int)(_mesh_retry_interval / 1000));
+            if (_mesh.connect()) {
+                _mesh_retry_interval = 5000;  // reset on success
+            } else {
+                // Double backoff, cap at 5 minutes
+                _mesh_retry_interval = (_mesh_retry_interval < 300000)
+                    ? _mesh_retry_interval * 2 : 300000;
+            }
         }
+    } else {
+        _mesh_retry_interval = 5000;  // reset while connected
     }
 }
 

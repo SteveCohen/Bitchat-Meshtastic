@@ -178,6 +178,15 @@ void BitchatBLE::loop() {
         _start_scanning();
     }
 
+    // Expire peers stuck in handshake — free their slots for new connections
+    for (auto &p : _peers) {
+        if (p.active && p.hs.phase != NOISE_HS_TRANSPORT && p.hs.phase != NOISE_HS_IDLE &&
+            (millis() - p.connect_time_ms) > BITCHAT_HANDSHAKE_TIMEOUT_MS) {
+            Serial.printf("[%s] Handshake timeout for conn %d, freeing slot\n", TAG, p.conn_handle);
+            _free_peer(p.conn_handle);
+        }
+    }
+
     // Periodic re-announce to keep peers aware of our presence
     if (millis() - _last_announce_ms > BITCHAT_ANNOUNCE_INTERVAL_MS) {
         _last_announce_ms = millis();
@@ -249,7 +258,10 @@ void BitchatBLE::_start_scanning() {
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(80);
-    scan->setAdvertisedDeviceCallbacks(new BitchatBLEScanCallbacks(this), false);
+    // Reuse a single callback instance to avoid leaking memory every scan cycle
+    static BitchatBLEScanCallbacks scan_cb(this);
+    scan_cb = BitchatBLEScanCallbacks(this);
+    scan->setAdvertisedDeviceCallbacks(&scan_cb, false);
 
     _scanning = true;
     _last_scan_ms = millis();
@@ -623,8 +635,18 @@ void BitchatBLE::_send_packet(uint8_t type, uint8_t flags,
 // ── _send_to_peer (unicast) ──────────────────────────────────────────
 
 void BitchatBLE::_send_to_peer(PeerSession *peer, const uint8_t *data, int len) {
-    // Auto-fragment if packet exceeds MTU
-    if (len > BITCHAT_BLE_MTU && data[1] != BITCHAT_PKT_FRAGMENT) {
+    // Determine effective MTU for this peer (3 bytes overhead for ATT header)
+    int peer_mtu = BITCHAT_BLE_MTU;
+    if (peer->we_are_central && peer->client) {
+        int m = peer->client->getMTU() - 3;
+        if (m > 0) peer_mtu = m;
+    } else if (_server) {
+        int m = NimBLEDevice::getMTU() - 3;
+        if (m > 0) peer_mtu = m;
+    }
+
+    // Auto-fragment if packet exceeds peer's actual MTU
+    if (len > peer_mtu && data[1] != BITCHAT_PKT_FRAGMENT) {
         _send_fragmented(peer, data, len);
         return;
     }
@@ -1351,9 +1373,10 @@ PeerSession *BitchatBLE::_alloc_peer(uint16_t handle, const uint8_t *addr, bool 
     for (auto &p : _peers) {
         if (!p.active) {
             memset(&p, 0, sizeof(PeerSession));
-            p.active         = true;
-            p.conn_handle    = handle;
-            p.we_are_central = we_are_central;
+            p.active           = true;
+            p.conn_handle      = handle;
+            p.we_are_central   = we_are_central;
+            p.connect_time_ms  = millis();
             if (addr) memcpy(p.ble_addr, addr, 6);
             return &p;
         }

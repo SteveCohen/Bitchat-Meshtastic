@@ -39,6 +39,10 @@ private:
 
     uint32_t _msg_count = 0;
 
+    // Meshtastic reconnect with exponential backoff
+    uint32_t _mesh_retry_ms = 0;          // when we last attempted
+    uint32_t _mesh_retry_interval = 5000; // starts at 5s, doubles up to 5min
+
     // Deduplication ring buffer
     struct DedupEntry {
         uint32_t hash;

@@ -61,6 +61,8 @@ void MeshtasticTCP::loop() {
         Serial.printf("[%s] Connection lost, will reconnect\n", TAG);
         _connected = false;
         _config_complete = false;
+        _rx_state = WAIT_START1;  // reset state machine to avoid hang
+        _rx_pos = 0;
         return;
     }
 
