@@ -1,5 +1,6 @@
 #include "meshtastic_tcp.h"
 #include <Arduino.h>
+#include <ESPmDNS.h>
 
 static const char *TAG = "MeshTCP";
 
@@ -9,7 +10,14 @@ MeshtasticTCP::MeshtasticTCP(const char *host, uint16_t port)
 bool MeshtasticTCP::connect() {
     Serial.printf("[%s] Connecting to %s:%d\n", TAG, _host, _port);
 
-    if (!_client.connect(_host, _port)) {
+    // Resolve mDNS .local hostnames before connecting
+    if (_resolve_host()) {
+        Serial.printf("[%s] Resolved %s → %s\n", TAG, _host, _resolved_ip.toString().c_str());
+        if (!_client.connect(_resolved_ip, _port)) {
+            Serial.printf("[%s] TCP connection failed\n", TAG);
+            return false;
+        }
+    } else if (!_client.connect(_host, _port)) {
         Serial.printf("[%s] TCP connection failed\n", TAG);
         return false;
     }
@@ -94,6 +102,35 @@ bool MeshtasticTCP::send_text(const char *text, uint32_t dest, uint8_t channel) 
 }
 
 // ── Private implementation ───────────────────────────
+
+bool MeshtasticTCP::_resolve_host() {
+    // Only attempt mDNS resolution for .local hostnames
+    const char *suffix = ".local";
+    int host_len = strlen(_host);
+    int suffix_len = strlen(suffix);
+    if (host_len <= suffix_len ||
+        strcmp(_host + host_len - suffix_len, suffix) != 0) {
+        return false;  // Not an mDNS name — let WiFiClient handle it
+    }
+
+    // Extract hostname without .local suffix
+    char hostname[64];
+    int name_len = host_len - suffix_len;
+    if (name_len >= (int)sizeof(hostname)) name_len = sizeof(hostname) - 1;
+    memcpy(hostname, _host, name_len);
+    hostname[name_len] = '\0';
+
+    Serial.printf("[%s] Resolving mDNS hostname: %s\n", TAG, _host);
+
+    _resolved_ip = MDNS.queryHost(hostname, 5000);  // 5s timeout
+
+    if (_resolved_ip == IPAddress(0, 0, 0, 0)) {
+        Serial.printf("[%s] mDNS resolution failed for %s\n", TAG, _host);
+        return false;
+    }
+
+    return true;
+}
 
 bool MeshtasticTCP::_do_handshake() {
     // Step 1: Send 32 bytes of 0xC3 to wake/reset the device parser

@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include "config.h"
 #include "utils/time_util.h"
 #include "meshtastic/meshtastic_tcp.h"
@@ -53,6 +54,13 @@ void setup() {
         Serial.println("WARNING: No WiFi — Meshtastic side unavailable");
         Serial.println("         Bitchat BLE will still operate");
     } else {
+        // Start mDNS for .local hostname resolution
+        if (MDNS.begin(BRIDGE_NAME)) {
+            Serial.printf("mDNS responder started as %s.local\n", BRIDGE_NAME);
+        } else {
+            Serial.println("mDNS init failed — .local resolution unavailable");
+        }
+
         // Sync time via NTP (needed for bitchat packet timestamps)
         configTime(0, 0, "pool.ntp.org", "time.nist.gov");
         Serial.print("NTP sync");

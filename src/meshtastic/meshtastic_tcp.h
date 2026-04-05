@@ -1,6 +1,7 @@
 #pragma once
 
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include "meshtastic_interface.h"
 #include "mesh_proto.h"
 #include "../config.h"
@@ -20,6 +21,7 @@ private:
     WiFiClient _client;
     const char *_host;
     uint16_t _port;
+    IPAddress _resolved_ip;
     bool _connected = false;
     bool _config_complete = false;
     uint32_t _config_nonce = 0;
@@ -59,6 +61,7 @@ private:
 
     // Internal methods
     bool _do_handshake();
+    bool _resolve_host();  // Resolve mDNS .local hostname to IP
     void _send_raw(const uint8_t *payload, uint16_t len);
     void _process_byte(uint8_t b);
     void _handle_from_radio(const uint8_t *buf, int len);

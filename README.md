@@ -11,7 +11,7 @@ An ESP32 firmware that bridges [Meshtastic](https://meshtastic.org/) LoRa mesh n
 └──────────────┘         └──────────────────┘         └──────────────┘
 ```
 
-The bridge connects to a Meshtastic node via TCP (port 4403) over WiFi and participates in the Bitchat BLE mesh as a native peer. Messages are forwarded bidirectionally with deduplication, identity mapping, and proper attribution.
+The bridge autodiscovers and connects to a Meshtastic node via mDNS (`meshtastic.local`) over TCP, and participates in the Bitchat BLE mesh as a native peer. Messages are forwarded bidirectionally with deduplication, identity mapping, and proper attribution.
 
 ### Key Features
 
@@ -47,13 +47,23 @@ git clone https://github.com/SteveCohen/Bitchat-Meshtastic.git
 cd Bitchat-Meshtastic
 ```
 
-Edit `src/config.h` with your network details:
+Edit `src/config.h` with your WiFi credentials:
 
 ```cpp
 #define WIFI_SSID          "your-ssid"
 #define WIFI_PASSWORD      "your-password"
-#define MESHTASTIC_HOST    "192.168.1.100"   // IP of your Meshtastic node
-#define MESHTASTIC_PORT    4403
+```
+
+That's it for most setups. The bridge autodiscovers your Meshtastic node via mDNS (`meshtastic.local`). If autodiscovery doesn't work, set the IP explicitly:
+
+```cpp
+#define MESHTASTIC_HOST    "192.168.1.100"   // IP address or mDNS hostname
+```
+
+Other optional settings:
+
+```cpp
+#define MESHTASTIC_PORT    4403              // TCP API port (default 4403)
 #define BRIDGE_NAME        "BitBridge"       // Name shown in Bitchat
 #define MESHTASTIC_CHANNEL 0                 // Meshtastic channel index
 ```
@@ -86,8 +96,11 @@ You should see:
 =================================
 Connecting to WiFi 'your-ssid'...
 WiFi connected, IP: 192.168.1.50
+mDNS responder started as BitBridge.local
 NTP sync OK (epoch: 1712345678000)
-[MeshTCP] Connecting to 192.168.1.100:4403
+[MeshTCP] Connecting to meshtastic.local:4403
+[MeshTCP] Resolving mDNS hostname: meshtastic.local
+[MeshTCP] Resolved meshtastic.local → 192.168.1.100
 [MeshTCP] Got my_node_num: 12345678
 [MeshTCP] Learned node 12345678: Alice (ALCE)
 [MeshTCP] Config complete, my_node=12345678, known nodes=5
@@ -143,6 +156,8 @@ All constants are in `src/config.h`:
 
 | Constant | Default | Description |
 |----------|---------|-------------|
+| `MESHTASTIC_HOST` | `"meshtastic.local"` | Meshtastic node address (mDNS or IP) |
+| `MESHTASTIC_PORT` | `4403` | Meshtastic TCP API port |
 | `BRIDGE_NAME` | `"BitBridge"` | Name shown to Bitchat peers |
 | `MESHTASTIC_CHANNEL` | `0` | Meshtastic channel to bridge |
 | `MAX_VIRTUAL_IDENTITIES` | `8` | Max concurrent virtual Bitchat peers |

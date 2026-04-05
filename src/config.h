@@ -5,7 +5,10 @@
 #define WIFI_PASSWORD      "your-password"
 
 // ── Meshtastic node (TCP interface) ───────────────────
-#define MESHTASTIC_HOST    "192.168.1.100"
+// Set MESHTASTIC_HOST to an IP address or mDNS hostname.
+// Default "meshtastic.local" uses mDNS autodiscovery — no config needed
+// if the Meshtastic node advertises itself via mDNS (most do by default).
+#define MESHTASTIC_HOST    "meshtastic.local"
 #define MESHTASTIC_PORT    4403
 
 // ── Bridge behaviour ──────────────────────────────────
