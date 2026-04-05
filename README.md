@@ -24,6 +24,20 @@ The bridge autodiscovers and connects to a Meshtastic node via mDNS (`meshtastic
 - **Packet fragmentation**: Automatic fragmentation/reassembly for messages exceeding BLE MTU
 - **Dual-role BLE**: Acts as both BLE central and peripheral simultaneously
 
+## Use Cases
+
+**Off-grid events and gatherings** — At a music festival, campout, or field day, some people have Meshtastic radios for long-range comms while others only have phones running Bitchat. Drop a bridge on a picnic table and both groups can talk to each other without anyone installing new apps.
+
+**Emergency and disaster response** — After a natural disaster knocks out cell towers, relief teams using Meshtastic LoRa radios can coordinate with nearby civilians using Bitchat on their phones over BLE. The bridge lets a single ESP32 connect both networks at a command post or shelter.
+
+**Building or campus mesh** — In a large building, warehouse, or campus, Meshtastic nodes on rooftops provide long-range coverage while Bitchat handles room-to-room BLE communication. The bridge ties the two layers together so a message sent from a phone in one room reaches a radio operator across the property.
+
+**Community mesh networks** — A neighborhood or small town runs Meshtastic for resilient off-grid communication. Visitors or newcomers who don't own a radio can join the conversation immediately using Bitchat on their phone, with the bridge making them visible to the LoRa side.
+
+**Outdoor recreation** — A hiking group splits up on a trail. Some carry Meshtastic handhelds for long-range check-ins; others prefer the Bitchat app on their phone. A bridge in a backpack keeps both halves of the group in contact, even when BLE range and LoRa range only overlap at the bridge.
+
+**Protocol development and testing** — Developers working on either the Meshtastic or Bitchat protocol can use the bridge to test interoperability, inspect cross-network message flow, and prototype new features without needing users on both networks simultaneously.
+
 ## Supported Hardware
 
 | Board | Chip | Status |
