@@ -348,3 +348,52 @@ static inline void ed25519_sign(uint8_t sig[64],
 
     memset(d, 0, sizeof(d));
 }
+
+// ── Ed25519 verify ──────────────────────────────────────────────────
+// Returns 0 on valid signature, -1 on failure.
+static inline int ed25519_verify(const uint8_t sig[64],
+                                  const uint8_t *msg, size_t msg_len,
+                                  const uint8_t pk[32]) {
+    // Quick reject: high bit of S must be clear
+    if (sig[63] & 0xf0) return -1;
+
+    // Decode public key as -A (negated point)
+    ed_gf negA[4];
+    if (_ed_unpackneg(negA, pk) != 0) return -1;
+
+    // H = SHA-512(R || pk || msg)
+    uint8_t h[64];
+    {
+        mbedtls_sha512_context ctx;
+        mbedtls_sha512_init(&ctx);
+        mbedtls_sha512_starts(&ctx, 0);
+        mbedtls_sha512_update(&ctx, sig, 32);       // R
+        mbedtls_sha512_update(&ctx, pk, 32);         // pk
+        mbedtls_sha512_update(&ctx, msg, msg_len);
+        mbedtls_sha512_finish(&ctx, h);
+        mbedtls_sha512_free(&ctx);
+    }
+
+    // Reduce H mod L
+    int64_t hx[64] = {};
+    for (int i = 0; i < 64; i++) hx[i] = (int64_t)(uint64_t)h[i];
+    uint8_t h_reduced[32];
+    _ed_reduce(h_reduced, hx);
+
+    // Compute S*B - H*A  (using -A from unpackneg)
+    ed_gf hA[4];
+    _ed_scalarmult(hA, negA, h_reduced);
+
+    ed_gf sB[4];
+    _ed_scalarbase(sB, sig + 32);
+
+    _ed_pt_add(sB, hA);
+
+    uint8_t t[32];
+    _ed_pack_point(t, sB);
+
+    // Compare with R (first 32 bytes of signature)
+    uint8_t diff = 0;
+    for (int i = 0; i < 32; i++) diff |= t[i] ^ sig[i];
+    return (diff == 0) ? 0 : -1;
+}

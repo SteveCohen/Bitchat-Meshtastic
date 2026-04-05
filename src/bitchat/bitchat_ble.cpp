@@ -3,6 +3,7 @@
 #include "../utils/time_util.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <atomic>
 #include <cstring>
 
 static const char *TAG = "BitchatBLE";
@@ -39,13 +40,14 @@ public:
     void onWrite(NimBLECharacteristic *chr, NimBLEConnInfo &info) override {
         NimBLEAttValue val = chr->getValue();
         int len = (int)val.length();
-        int next = (_p->_rx_head + 1) % BitchatBLE::RX_QUEUE_SIZE;
-        if (len > 0 && len <= BitchatBLE::RX_BUF_SIZE && next != _p->_rx_tail) {
-            auto &entry = _p->_rx_queue[_p->_rx_head];
+        int head = _p->_rx_head.load(std::memory_order_relaxed);
+        int next = (head + 1) % BitchatBLE::RX_QUEUE_SIZE;
+        if (len > 0 && len <= BitchatBLE::RX_BUF_SIZE && next != _p->_rx_tail.load(std::memory_order_acquire)) {
+            auto &entry = _p->_rx_queue[head];
             memcpy(entry.data, val.data(), len);
             entry.len = len;
             entry.conn_handle = info.getConnHandle();
-            _p->_rx_head = next;
+            _p->_rx_head.store(next, std::memory_order_release);
         }
     }
 
@@ -161,13 +163,14 @@ void BitchatBLE::loop() {
     if (!_active) return;
 
     // Drain the RX ring buffer (process all pending packets)
-    while (_rx_tail != _rx_head) {
-        auto &entry = _rx_queue[_rx_tail];
+    while (_rx_tail.load(std::memory_order_relaxed) != _rx_head.load(std::memory_order_acquire)) {
+        int tail = _rx_tail.load(std::memory_order_relaxed);
+        auto &entry = _rx_queue[tail];
         _rx_buf         = entry.data;
         _rx_len         = entry.len;
         _rx_conn_handle = entry.conn_handle;
         _process_incoming();
-        _rx_tail = (_rx_tail + 1) % RX_QUEUE_SIZE;
+        _rx_tail.store((tail + 1) % RX_QUEUE_SIZE, std::memory_order_release);
     }
 
     // Periodically restart scanning if we have room for more peers
@@ -809,6 +812,39 @@ void BitchatBLE::_process_incoming() {
         peer->peer_id_known = true;
     }
 
+    // ── Ed25519 signature verification ──────────────────────────────
+    if (flags & BITCHAT_FLAG_HAS_SIGNATURE) {
+        // Signature is the last 64 bytes of the packet
+        if (pkt_len < (int)(offset + payload_len + 64)) {
+            Serial.printf("[%s] Signed packet too short for signature\n", TAG);
+            return;
+        }
+        const uint8_t *sig = pkt + pkt_len - 64;
+        int signed_len = pkt_len - 64;  // everything before the signature
+
+        if (type == BITCHAT_PKT_ANNOUNCE) {
+            // Self-certifying: verify against the signing pubkey embedded in the announce TLV
+            const uint8_t *sign_pub = nullptr;
+            uint8_t sign_pub_len = 0;
+            _tlv_find(payload, payload_len, BITCHAT_TLV_SIGNING_PUBKEY, &sign_pub, &sign_pub_len);
+            if (sign_pub && sign_pub_len == 32) {
+                if (ed25519_verify(sig, pkt, signed_len, sign_pub) != 0) {
+                    Serial.printf("[%s] WARN: Announce signature INVALID, dropping\n", TAG);
+                    return;
+                }
+            }
+            // No signing pubkey in announce — can't verify, allow through
+        } else if (peer->sign_pubkey_known) {
+            // Verify against stored signing pubkey from previous announce
+            if (ed25519_verify(sig, pkt, signed_len, peer->sign_pubkey) != 0) {
+                Serial.printf("[%s] WARN: Packet signature INVALID (type=0x%02x), dropping\n", TAG, type);
+                return;
+            }
+        } else {
+            Serial.printf("[%s] WARN: Signed packet but no known pubkey for peer, allowing\n", TAG);
+        }
+    }
+
     switch (type) {
         case BITCHAT_PKT_ANNOUNCE:
             _handle_announce(peer, payload, payload_len, sender_id);
@@ -854,19 +890,30 @@ void BitchatBLE::_handle_announce(PeerSession *peer, const uint8_t *payload,
     uint8_t noise_pub_len = 0;
     _tlv_find(payload, payload_len, BITCHAT_TLV_NOISE_PUBKEY, &noise_pub, &noise_pub_len);
 
+    const uint8_t *sign_pub = nullptr;
+    uint8_t sign_pub_len = 0;
+    _tlv_find(payload, payload_len, BITCHAT_TLV_SIGNING_PUBKEY, &sign_pub, &sign_pub_len);
+
     char nick_str[33] = {};
     if (nick_val && nick_len > 0) {
         int n = (nick_len < 32) ? nick_len : 32;
         memcpy(nick_str, nick_val, n);
     }
 
-    Serial.printf("[%s] Announce from %02x%02x%02x%02x nick='%s' noisePub=%s\n",
+    Serial.printf("[%s] Announce from %02x%02x%02x%02x nick='%s' noisePub=%s signPub=%s\n",
                   TAG, sender_id[0], sender_id[1], sender_id[2], sender_id[3],
-                  nick_str, (noise_pub && noise_pub_len == 32) ? "yes" : "no");
+                  nick_str, (noise_pub && noise_pub_len == 32) ? "yes" : "no",
+                  (sign_pub && sign_pub_len == 32) ? "yes" : "no");
 
     // Store nickname on peer session for later use in message attribution
     if (nick_str[0]) {
         strncpy(peer->nickname, nick_str, sizeof(peer->nickname) - 1);
+    }
+
+    // Store signing public key for signature verification on future packets
+    if (sign_pub && sign_pub_len == 32) {
+        memcpy(peer->sign_pubkey, sign_pub, 32);
+        peer->sign_pubkey_known = true;
     }
 
     peer->announce_rcvd = true;
@@ -1141,7 +1188,11 @@ void BitchatBLE::_handle_fragment(PeerSession * /*peer*/, const uint8_t *payload
     const uint8_t *chunk = payload + BITCHAT_FRAG_HEADER_LEN;
     int chunk_len = payload_len - BITCHAT_FRAG_HEADER_LEN;
 
-    if (frag_idx >= total_frags || total_frags > BITCHAT_MAX_FRAGMENTS) return;
+    if (total_frags == 0 || frag_idx >= total_frags || total_frags > BITCHAT_MAX_FRAGMENTS) return;
+
+    // Bound chunk size to the per-fragment staging area to prevent overflow
+    int max_chunk = (int)(sizeof(FragReassembly::data) / BITCHAT_MAX_FRAGMENTS);
+    if (chunk_len > max_chunk || chunk_len <= 0) return;
 
     // Find or allocate reassembly slot
     uint32_t now = millis();

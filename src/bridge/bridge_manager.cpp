@@ -47,13 +47,28 @@ void BridgeManager::loop() {
     _mesh.loop();
     _bitchat.loop();
 
-    // Periodic re-announce of active virtual identities
-    if (_master_kp && (millis() - _last_virt_announce_ms) > BITCHAT_ANNOUNCE_INTERVAL_MS) {
-        _last_virt_announce_ms = millis();
-        for (const auto &vi : _virt_registry.all()) {
-            _bitchat.announce_virtual(&vi.keypair,
-                vi.display_name[0] ? vi.display_name : nullptr);
-            delay(VIRTUAL_ANNOUNCE_STAGGER_MS);
+    // Non-blocking re-announce of active virtual identities (one per tick)
+    if (_master_kp) {
+        if (_virt_announce_idx < 0) {
+            // Idle: start a new cycle when interval has elapsed
+            if ((millis() - _last_virt_announce_cycle_ms) > BITCHAT_ANNOUNCE_INTERVAL_MS) {
+                _virt_announce_idx = 0;
+                _last_virt_announce_cycle_ms = millis();
+                _last_virt_announce_step_ms = 0;  // send first immediately
+            }
+        }
+        if (_virt_announce_idx >= 0 &&
+            (millis() - _last_virt_announce_step_ms) >= VIRTUAL_ANNOUNCE_STAGGER_MS) {
+            const auto &all = _virt_registry.all();
+            if (_virt_announce_idx < (int)all.size()) {
+                const auto &vi = all[_virt_announce_idx];
+                _bitchat.announce_virtual(&vi.keypair,
+                    vi.display_name[0] ? vi.display_name : nullptr);
+                _last_virt_announce_step_ms = millis();
+                _virt_announce_idx++;
+            } else {
+                _virt_announce_idx = -1;  // cycle complete
+            }
         }
     }
 
@@ -119,7 +134,7 @@ void BridgeManager::_on_meshtastic_message(const BridgeMessage &msg) {
     }
 
     // Fallback: send as bridge identity with prefix
-    char bridged_text[256];
+    char bridged_text[320];
     _format_bridged_text(msg, bridged_text, sizeof(bridged_text));
 
     Serial.printf("[%s] Mesh→BLE: %s\n", TAG, bridged_text);
@@ -147,7 +162,7 @@ void BridgeManager::_on_bitchat_message(const BridgeMessage &msg) {
     }
 
     // Format the message for Meshtastic
-    char bridged_text[256];
+    char bridged_text[320];
     _format_bridged_text(msg, bridged_text, sizeof(bridged_text));
 
     Serial.printf("[%s] BLE→Mesh: %s\n", TAG, bridged_text);
@@ -209,7 +224,6 @@ void BridgeManager::_on_identity_evicted(const VirtualIdentity &vi) {
     snprintf(ble_msg, sizeof(ble_msg),
              "%s has gone idle and left the chat. New messages from them will appear under %s.",
              name, BRIDGE_NAME);
-    _bitchat.send_text_as(ble_msg, &vi.keypair);
 
     // Notify Meshtastic: let the user know their identity was released
     char mesh_msg[128];
@@ -217,6 +231,16 @@ void BridgeManager::_on_identity_evicted(const VirtualIdentity &vi) {
              "[B] Bridge released identity for %s (memory pressure). "
              "Messages will still be bridged under %s.",
              name, BRIDGE_NAME);
+
+    // Record hashes BEFORE sending to prevent echo loops
+    BridgeMessage tmp;
+    strncpy(tmp.text, ble_msg, sizeof(tmp.text) - 1);
+    _record_hash(tmp.hash());
+    memset(tmp.text, 0, sizeof(tmp.text));
+    strncpy(tmp.text, mesh_msg, sizeof(tmp.text) - 1);
+    _record_hash(tmp.hash());
+
+    _bitchat.send_text_as(ble_msg, &vi.keypair);
     _mesh.send_text(mesh_msg);
 
     Serial.printf("[%s] Evicted virtual identity for %s (node %08x), "

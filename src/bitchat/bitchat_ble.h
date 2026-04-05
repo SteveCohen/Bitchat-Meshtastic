@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include "bitchat_interface.h"
 #include "bitchat_identity.h"
 #include "noise_handshake.h"
@@ -26,6 +27,8 @@ struct PeerSession {
     bool     announce_sent = false;   // true after we sent our announce
     bool     announce_rcvd = false;   // true after we received their announce
     char     nickname[33]  = {};     // display name from announce (empty if unknown)
+    uint8_t  sign_pubkey[32] = {};   // Ed25519 signing public key (from announce TLV)
+    bool     sign_pubkey_known = false;
     NoiseHandshakeState hs = {};
 
     // For central (client) role: handle to remote characteristic
@@ -72,8 +75,8 @@ private:
         uint16_t conn_handle;
     };
     RxEntry          _rx_queue[RX_QUEUE_SIZE] = {};
-    volatile int     _rx_head = 0;  // next write position (producer)
-    volatile int     _rx_tail = 0;  // next read position (consumer)
+    std::atomic<int> _rx_head{0};   // next write position (producer)
+    std::atomic<int> _rx_tail{0};   // next read position (consumer)
 
     // Legacy aliases used during _process_incoming
     uint8_t         *_rx_buf = nullptr;

@@ -28,8 +28,10 @@ private:
     IdentityMapper _id_mapper;
     VirtualIdentityRegistry _virt_registry;
 
-    // Periodic virtual announce tracking
-    uint32_t _last_virt_announce_ms = 0;
+    // Non-blocking virtual announce state machine
+    uint32_t _last_virt_announce_cycle_ms = 0;  // when the current cycle started
+    uint32_t _last_virt_announce_step_ms = 0;   // when the last individual announce was sent
+    int      _virt_announce_idx = -1;           // -1 = idle, >=0 = in progress
     uint32_t _last_mem_check_ms = 0;
 
     // Send farewell notifications when a virtual identity is evicted
