@@ -347,15 +347,54 @@ LoRa Mesh                 │                                                 �
 
 **What this means in practice:**
 
-- **Only 4 Bitchat phones can connect to the bridge at once.** A 5th phone will see the bridge advertising but can't connect until one of the 4 disconnects. However, the connected phones can relay packets to further-away Bitchat peers via the BLE mesh gossip protocol (TTL-based flooding), extending reach beyond direct connections.
+- **Only 4 Bitchat phones can connect directly to the bridge** — but this does NOT mean only 4 people can receive messages. Bitchat is a mesh network. The connected phones relay packets to their own BLE peers, who relay further, and so on. The bridge sends once; the mesh delivers.
 
-- **All 32 virtual identities are visible to all 4 connected phones.** Each phone sees up to 32 Meshtastic users appear as distinct Bitchat peers. The identities multiplex over the physical connections — no per-identity connection is needed.
+- **All 32 virtual identities are visible to all connected phones.** Each phone sees up to 32 Meshtastic users appear as distinct Bitchat peers. The identities multiplex over the physical connections — no per-identity connection is needed.
 
 - **Throughput scales with connections, not identities.** Each BLE connection operates at roughly 10-20KB/s with a 512-byte MTU and typical 30-50ms connection intervals. With 4 connections, total BLE throughput is ~40-80KB/s. Announces for 32 identities (180 bytes each, every 60s, to 4 peers) consume ~380 bytes/second — under 1% of available bandwidth.
 
 - **More connections = less bandwidth per connection.** The ESP32 has a single BLE radio. NimBLE schedules connection events across all active connections in a round-robin fashion. Going from 4 to 8 connections roughly halves the throughput available to each connection. For a bridge that's mostly forwarding short text messages, 4 connections is a good balance.
 
 - **You can raise `BITCHAT_MAX_CONNECTIONS`** in `config.h` up to 9, but beyond 5-6 connections you'll notice increased latency on individual messages as the radio has less time per connection. The Meshtastic side (TCP over WiFi) has no such limit — it can handle traffic from the entire LoRa mesh.
+
+#### BLE mesh gossip: how 4 connections reach 30 people
+
+The bridge doesn't need a direct connection to every Bitchat phone. The Bitchat protocol uses TTL-based gossip flooding — every peer relays packets it receives to all its other connections, decrementing the TTL until it hits zero. The bridge just needs to get the packet into the mesh; the mesh does the rest.
+
+Here's what a realistic scenario looks like. Say there are 12 Bitchat users at a campsite, spread across BLE range (~30-50m outdoors). The bridge can only connect to 4 of them directly, but the message reaches everyone:
+
+```
+                                                    ┌─── Phone H
+                                    ┌─── Phone E ───┤
+                 ┌─── Phone A ──────┤               └─── Phone I
+                 │                  └─── Phone F
+  ESP32 Bridge ──┤
+    (sends 4     ├─── Phone B ────────── Phone G ──────── Phone J
+     packets)    │
+                 ├─── Phone C
+                 │
+                 └─── Phone D ──────┬─── Phone K
+                                    └─── Phone L
+```
+
+1. Bridge sends a message to Phones A, B, C, D (4 packets out).
+2. Phone A relays to Phones E, F. Phone D relays to Phones K, L. Phone B relays to G.
+3. Phone E relays to H, I. Phone G relays to J.
+4. All 12 people have the message. The bridge sent 4 packets — the mesh handled the other 8.
+
+**Key details:**
+
+- **The bridge sends each packet exactly once per direct connection.** It does not round-robin or retry. One write per connected peer per message — the relay logic is on the receiving phones, not the bridge.
+
+- **Relay deduplication prevents loops.** Every node (including the bridge) keeps a hash cache of recently-seen packets. If Phone E receives the same packet from both Phone A and Phone B, it relays it only once.
+
+- **TTL limits propagation depth.** Packets start with TTL=7 (`BITCHAT_MAX_HOPS`). Each relay decrements it. This prevents packets from bouncing around forever in dense meshes, and caps the propagation radius at 7 hops — more than enough for any realistic BLE gathering.
+
+- **Announces propagate the same way.** When the bridge announces a virtual identity, that announce relays through the mesh. Phones that aren't directly connected to the bridge still see the virtual identity appear in their peer list after a hop or two.
+
+- **The bridge also relays inbound.** When Phone K sends a message, Phone D receives it and relays it to the bridge (and to Phone L). The bridge doesn't need a direct connection to Phone K — it reaches the bridge through the mesh, then gets forwarded to Meshtastic.
+
+**What this means for sizing:** The 4-connection limit is about direct radio links, not audience size. In practice, a dense group of 20-30 Bitchat phones within a few hops of each other will all receive bridged messages, even though only 4 are directly connected to the ESP32. The limiting factor for large groups is BLE range between phones (each hop needs peers within ~30-50m of each other) and the TTL depth (7 hops), not the bridge's connection count.
 
 ## Dependencies
 
