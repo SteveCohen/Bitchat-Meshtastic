@@ -779,6 +779,17 @@ void BitchatBLE::_process_incoming() {
     uint8_t type    = pkt[1];
     uint8_t ttl     = pkt[2];
 
+    // Extract 8-byte big-endian timestamp (ms since Unix epoch) at pkt[3..10]
+    // and bootstrap wall-clock time if we haven't synced yet
+    if (pkt_len >= 11) {
+        uint64_t pkt_ts_ms = 0;
+        for (int i = 0; i < 8; i++) pkt_ts_ms = (pkt_ts_ms << 8) | pkt[3 + i];
+        uint32_t pkt_ts_sec = (uint32_t)(pkt_ts_ms / 1000);
+        if (pkt_ts_sec > 0 && time_sync_from_epoch(pkt_ts_sec)) {
+            Serial.printf("[%s] Clock synced from Bitchat packet timestamp: %u\n", TAG, pkt_ts_sec);
+        }
+    }
+
     // Determine header layout based on version
     int header_len;
     uint8_t  flags;
