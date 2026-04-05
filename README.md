@@ -40,11 +40,25 @@ The bridge autodiscovers and connects to a Meshtastic node via mDNS (`meshtastic
 
 ## Supported Hardware
 
-| Board | Chip | Status |
-|-------|------|--------|
-| ESP32-S3-DevKitC-1 | ESP32-S3 | Recommended (300KB+ free heap) |
-| ESP32-S3 + PSRAM | ESP32-S3 N8R8 | Supported |
-| ESP32-C6-DevKitC-1 | ESP32-C6 | Supported (reduce `MAX_VIRTUAL_IDENTITIES` to 4) |
+| Board | Chip | Free heap (typical) | Virtual identities | Notes |
+|-------|------|--------------------|--------------------|-------|
+| ESP32-S3-DevKitC-1 | ESP32-S3 | ~250KB | 32 (hard cap) | Recommended. Heap never a constraint for identities. |
+| ESP32-S3 + PSRAM | ESP32-S3 N8R8 | ~250KB internal + PSRAM | 32 (hard cap) | Most headroom. PSRAM available for future features. |
+| ESP32-C6-DevKitC-1 | ESP32-C6 | ~160KB | 25-32 | Fully functional. May shed a few under heavy BLE load. |
+
+### Memory budget
+
+Each virtual identity costs **240 bytes** of heap (192-byte keypair + 48 bytes metadata). At the hard cap of 32 identities, that's only **7.5KB** — the identities themselves are never the bottleneck.
+
+The real heap consumers are the BLE and WiFi stacks (~80KB), fragment reassembly buffers (~8.5KB for 4 slots), and per-peer Noise sessions (~400 bytes each). After all subsystems initialize, typical free heap is:
+
+| Platform | Total SRAM | Free after init | Available above 40KB reserve | Identities before pressure |
+|----------|-----------|----------------|------------------------------|---------------------------|
+| ESP32-S3 | 512KB | ~250KB | ~210KB | 32 (capped long before pressure) |
+| ESP32-S3 + PSRAM | 512KB + 8MB | ~250KB+ | ~210KB+ | 32 (capped) |
+| ESP32-C6 | 512KB | ~160KB | ~120KB | 32 (capped, ~112KB still free) |
+
+On all platforms, the 32-identity hard cap is reached well before memory pressure. The dynamic scaling and LRU eviction exist as a safety net for unexpected heap spikes (e.g. many simultaneous BLE connections, large fragmented messages, or future features that increase per-identity cost).
 
 ## Prerequisites
 
