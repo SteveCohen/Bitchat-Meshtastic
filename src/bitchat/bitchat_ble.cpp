@@ -368,7 +368,7 @@ void BitchatBLE::_connect_to_peripheral(NimBLEAdvertisedDevice *dev) {
 // with NoisePayload(privateMessage) containing inner TLV content(0x01).
 // For peers without Noise sessions: send as PKT_MESSAGE (0x02) plaintext.
 
-bool BitchatBLE::send_text(const char *text) {
+bool BitchatBLE::send_text(const char *text, const char *geohash) {
     if (!_active) return false;
 
     int text_len = (int)strlen(text);
@@ -399,6 +399,14 @@ bool BitchatBLE::send_text(const char *text) {
             tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_TEXT,
                                    (const uint8_t *)text, (uint8_t)text_len);
 
+            // Append geohash TLV if provided
+            if (geohash && geohash[0]) {
+                int gh_len = (int)strlen(geohash);
+                if (gh_len > 11) gh_len = 11;
+                tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_GEOHASH,
+                                       (const uint8_t *)geohash, (uint8_t)gh_len);
+            }
+
             // Build and send to this specific peer
             uint8_t packet[2048];
             int pos = 0;
@@ -428,7 +436,8 @@ bool BitchatBLE::send_text(const char *text) {
 // ── send_text_as (Option A: plaintext only) ─────────────────────────
 // Send a PKT_MESSAGE as a virtual identity. Always plaintext (no Noise).
 
-bool BitchatBLE::send_text_as(const char *text, const BitchatKeypair *identity) {
+bool BitchatBLE::send_text_as(const char *text, const BitchatKeypair *identity,
+                              const char *geohash) {
     if (!_active || !identity) return false;
 
     int text_len = (int)strlen(text);
@@ -438,6 +447,14 @@ bool BitchatBLE::send_text_as(const char *text, const BitchatKeypair *identity) 
     int tlv_len = 0;
     tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_TEXT,
                            (const uint8_t *)text, (uint8_t)text_len);
+
+    // Append geohash TLV if provided
+    if (geohash && geohash[0]) {
+        int gh_len = (int)strlen(geohash);
+        if (gh_len > 11) gh_len = 11;
+        tlv_len += _tlv_encode(tlv_buf + tlv_len, BITCHAT_TLV_GEOHASH,
+                               (const uint8_t *)geohash, (uint8_t)gh_len);
+    }
 
     uint8_t packet[2048];
     int pos = 0;
@@ -948,6 +965,11 @@ void BitchatBLE::_handle_message(PeerSession * /*peer*/, const uint8_t *payload,
 
     if (!text_val || text_len == 0) return;
 
+    // Extract geohash TLV if present
+    const uint8_t *geo_val = nullptr;
+    uint8_t geo_len = 0;
+    _tlv_find(payload, payload_len, BITCHAT_TLV_GEOHASH, &geo_val, &geo_len);
+
     BridgeMessage msg;
     msg.origin       = MessageOrigin::BITCHAT;
     msg.timestamp_ms = millis();
@@ -955,6 +977,12 @@ void BitchatBLE::_handle_message(PeerSession * /*peer*/, const uint8_t *payload,
     int cl = (text_len < sizeof(msg.text) - 1) ? text_len : sizeof(msg.text) - 1;
     memcpy(msg.text, text_val, cl);
     msg.text[cl] = '\0';
+
+    // Copy geohash into message if found
+    if (geo_val && geo_len > 0 && geo_len <= 11) {
+        memcpy(msg.geohash, geo_val, geo_len);
+        msg.geohash[geo_len] = '\0';
+    }
 
     memcpy(msg.sender.bitchat_fingerprint, sender_id, BITCHAT_SENDER_ID_LEN);
 

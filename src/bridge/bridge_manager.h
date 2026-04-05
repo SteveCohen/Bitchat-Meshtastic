@@ -51,6 +51,13 @@ private:
     void _on_meshtastic_message(const BridgeMessage &msg);
     void _on_bitchat_message(const BridgeMessage &msg);
 
+    // Geohash scope filtering — returns true if message should be forwarded
+    bool _should_bridge_to_meshtastic(const BridgeMessage &msg) const;
+
+    // Build the bridge's outgoing geohash (truncated to bridge precision)
+    // Returns nullptr if geohash scoping is disabled.
+    const char *_bridge_region_geohash(char *buf, int buf_len) const;
+
     // Deduplication
     bool _is_duplicate(uint32_t hash);
     void _record_hash(uint32_t hash);

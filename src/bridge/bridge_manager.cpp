@@ -89,6 +89,45 @@ void BridgeManager::loop() {
     }
 }
 
+// ── Geohash scoping ─────────────────────────────────
+
+bool BridgeManager::_should_bridge_to_meshtastic(const BridgeMessage &msg) const {
+    // If scoping disabled, always bridge (backward compatible)
+    if (!GEOHASH_SCOPE_ENABLED) return true;
+
+    // If bridge has no geohash configured, always bridge
+    if (strlen(BRIDGE_GEOHASH) == 0) return true;
+
+    // If message has no geohash, always bridge (backward compatible)
+    int precision = msg.geohash_precision();
+    if (precision == 0) return true;
+
+    // Core rule: bridge only if message precision <= threshold
+    // High precision = local/block scope = keep on BLE
+    // Low precision = region scope = forward to Meshtastic
+    if (precision <= BRIDGE_GEOHASH_PRECISION) {
+        Serial.printf("[%s] Geohash '%s' (precision %d <= %d): forwarding to Meshtastic\n",
+                      TAG, msg.geohash, precision, BRIDGE_GEOHASH_PRECISION);
+        return true;
+    }
+
+    Serial.printf("[%s] Geohash '%s' (precision %d > %d): keeping local (BLE only)\n",
+                  TAG, msg.geohash, precision, BRIDGE_GEOHASH_PRECISION);
+    return false;
+}
+
+const char *BridgeManager::_bridge_region_geohash(char *buf, int buf_len) const {
+    if (!GEOHASH_SCOPE_ENABLED || strlen(BRIDGE_GEOHASH) == 0) return nullptr;
+
+    int len = BRIDGE_GEOHASH_PRECISION;
+    int src_len = (int)strlen(BRIDGE_GEOHASH);
+    if (len > src_len) len = src_len;
+    if (len >= buf_len) len = buf_len - 1;
+    memcpy(buf, BRIDGE_GEOHASH, len);
+    buf[len] = '\0';
+    return buf;
+}
+
 // ── Message handlers ─────────────────────────────────
 
 void BridgeManager::_on_meshtastic_message(const BridgeMessage &msg) {
@@ -104,6 +143,10 @@ void BridgeManager::_on_meshtastic_message(const BridgeMessage &msg) {
         _id_mapper.update_mesh_name(msg.sender.meshtastic_node_id,
                                      msg.sender.display_name, nullptr);
     }
+
+    // Determine outgoing geohash for BLE-bound messages (region scope)
+    char region_geohash[12] = {};
+    const char *outgoing_geohash = _bridge_region_geohash(region_geohash, sizeof(region_geohash));
 
     // Try to route through a virtual identity for this Meshtastic sender
     if (_master_kp && msg.sender.meshtastic_node_id) {
@@ -127,7 +170,7 @@ void BridgeManager::_on_meshtastic_message(const BridgeMessage &msg) {
             strncpy(outgoing.text, msg.text, sizeof(outgoing.text) - 1);
             _record_hash(outgoing.hash());
 
-            _bitchat.send_text_as(msg.text, &vi->keypair);
+            _bitchat.send_text_as(msg.text, &vi->keypair, outgoing_geohash);
             _msg_count++;
             return;
         }
@@ -143,7 +186,7 @@ void BridgeManager::_on_meshtastic_message(const BridgeMessage &msg) {
     strncpy(outgoing.text, bridged_text, sizeof(outgoing.text) - 1);
     _record_hash(outgoing.hash());
 
-    _bitchat.send_text(bridged_text);
+    _bitchat.send_text(bridged_text, outgoing_geohash);
     _msg_count++;
 }
 
@@ -159,6 +202,11 @@ void BridgeManager::_on_bitchat_message(const BridgeMessage &msg) {
     if (msg.sender.display_name[0] && msg.sender.has_bitchat_fingerprint()) {
         _id_mapper.update_ble_name(msg.sender.bitchat_fingerprint,
                                     msg.sender.display_name);
+    }
+
+    // Geohash scope check: high-precision geohash = local BLE only
+    if (!_should_bridge_to_meshtastic(msg)) {
+        return;
     }
 
     // Format the message for Meshtastic

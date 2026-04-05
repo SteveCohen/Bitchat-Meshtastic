@@ -39,6 +39,16 @@ struct BridgeMessage {
     // The text payload (UTF-8, null-terminated)
     char text[256] = {};
 
+    // Geohash scope (empty = no geohash / global scope)
+    char geohash[12] = {};  // max 11 chars + null terminator
+
+    // Geohash precision (0 = none/global)
+    int geohash_precision() const {
+        int len = 0;
+        while (len < 11 && geohash[len]) len++;
+        return len;
+    }
+
     // Timestamp (millis since boot)
     uint32_t timestamp_ms = 0;
 

@@ -33,6 +33,16 @@
 #define MSG_PREFIX_MESH    "[M] "   // Prefix for messages originating from Meshtastic
 #define MSG_PREFIX_BLE     "[B] "   // Prefix for messages originating from Bitchat BLE
 
+// ── Geohash scoping ──────────────────────────────────
+// When enabled, geohash precision controls message scope:
+//   high precision (> threshold) = stays on local BLE mesh ("block talk")
+//   low precision  (<= threshold) = bridged to Meshtastic ("town square")
+//   no geohash = always bridged (backward compatible)
+#define GEOHASH_SCOPE_ENABLED       false       // Master toggle (set true to activate)
+#define BRIDGE_GEOHASH              ""          // Bridge location geohash, e.g. "9q8yyk"
+#define BRIDGE_GEOHASH_PRECISION    4           // Messages with precision > this stay BLE-only
+                                                // 4 chars ≈ 40km x 20km (matches LoRa range)
+
 // ── Meshtastic protocol constants ─────────────────────
 #define MESH_START1        0x94
 #define MESH_START2        0xC3

@@ -28,12 +28,15 @@ public:
     virtual void loop() = 0;
 
     // Send a text message to the Bitchat BLE mesh (as the bridge identity).
+    // Optional geohash tags the message with a geographic scope.
     // Returns true if the message was broadcast successfully.
-    virtual bool send_text(const char *text) = 0;
+    virtual bool send_text(const char *text, const char *geohash = nullptr) = 0;
 
     // Send a text message as a virtual identity (Option A: plaintext only).
     // The keypair determines sender_id and signature.
-    virtual bool send_text_as(const char *text, const BitchatKeypair *identity) = 0;
+    // Optional geohash tags the message with a geographic scope.
+    virtual bool send_text_as(const char *text, const BitchatKeypair *identity,
+                              const char *geohash = nullptr) = 0;
 
     // Send an announce packet as a virtual identity to all peers.
     virtual void announce_virtual(const BitchatKeypair *identity, const char *name) = 0;
