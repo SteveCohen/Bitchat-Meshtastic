@@ -196,6 +196,7 @@ struct ParsedTextMessage {
     uint32_t to_node = 0;
     uint32_t packet_id = 0;
     uint8_t channel = 0;
+    uint32_t rx_time = 0;   // Unix seconds from MeshPacket.rx_time (field 9)
     char text[256] = {};
 };
 
@@ -240,6 +241,7 @@ inline ParsedTextMessage parse_from_radio(const uint8_t *buf, int len) {
             case 3: if (f.wire_type == 0) result.channel = (uint8_t)f.varint_val; break;
             case 4: if (f.wire_type == 2) { decoded_data = f.bytes_val.data; decoded_len = f.bytes_val.len; } break;
             case 6: if (f.wire_type == 5) result.packet_id = f.fixed32_val; break;
+            case 9: if (f.wire_type == 5) result.rx_time = f.fixed32_val; break;
         }
     }
 

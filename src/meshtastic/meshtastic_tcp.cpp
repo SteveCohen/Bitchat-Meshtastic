@@ -1,4 +1,5 @@
 #include "meshtastic_tcp.h"
+#include "../utils/time_util.h"
 #include <Arduino.h>
 #include <ESPmDNS.h>
 
@@ -265,6 +266,13 @@ void MeshtasticTCP::_handle_from_radio(const uint8_t *buf, int len) {
 
     // Parse for text messages
     auto msg = mesh_proto::parse_from_radio(buf, len);
+
+    // Bootstrap wall-clock time from the first Meshtastic packet with a valid timestamp.
+    // This gives us real time in AP mode where NTP is unavailable.
+    if (msg.rx_time > 0 && time_sync_from_epoch(msg.rx_time)) {
+        Serial.printf("[%s] Clock synced from Meshtastic rx_time: %u\n", TAG, msg.rx_time);
+    }
+
     if (msg.valid && _on_message) {
         // Don't echo back our own messages
         if (msg.from_node == _my_node_id && _my_node_id != 0) return;

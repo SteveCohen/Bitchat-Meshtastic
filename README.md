@@ -171,11 +171,11 @@ For field use without existing WiFi infrastructure, the bridge can host its own 
 | Mode | `WIFI_MODE` | Behavior |
 |------|-------------|----------|
 | Station | `"STA"` | Connect to an existing WiFi network (home/office). Default. |
-| Access Point | `"AP"` | Create a WiFi network. No internet, no NTP — timestamps use `millis()`. |
+| Access Point | `"AP"` | Create a WiFi network. No internet — clock syncs from first Meshtastic packet. |
 | Auto | `"AUTO"` | Try STA first; if it fails (no network in range), automatically fall back to AP. Best for devices that move between field and home. |
 
 **Notes for AP mode:**
-- No internet access — NTP time sync is unavailable, so bitchat packet timestamps use `millis()` (time since boot) rather than wall-clock time. This is fine for message ordering but means timestamps won't match between reboots.
+- No internet access means no NTP. Instead, the bridge bootstraps wall-clock time from the first Meshtastic packet it receives — Meshtastic nodes typically have GPS time or were NTP-synced before going to the field. Once the first `rx_time` arrives, the ESP32's system clock is set and all subsequent Bitchat packet timestamps use real Unix time. Until that first packet, timestamps fall back to `millis()` (time since boot).
 - The Meshtastic node must be configured to connect to the bridge's WiFi network and have TCP API enabled.
 - The bridge runs a DHCP server (built into ESP32 `softAP`) on the 192.168.4.0/24 subnet.
 - mDNS still works on the AP network, so `meshtastic.local` resolution works if the Meshtastic node supports it.
