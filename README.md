@@ -260,6 +260,8 @@ Communicates via the Meshtastic TCP API (raw protobuf, no nanopb dependency). Th
 - `MeshPacket` / `Data` encoding/decoding for text messages
 - Heartbeat packets
 
+**Reconnection with exponential backoff**: If the TCP connection to the Meshtastic node drops (node rebooted, WiFi glitch, out of range), the bridge automatically reconnects with exponential backoff: 5s, 10s, 20s, 40s, ... up to a 5-minute ceiling. This prevents flooding the network with connection attempts when the node is down for an extended period (e.g. battery died). The backoff resets to 5s immediately on a successful reconnect. The TCP receive state machine is also reset on disconnect, so a connection drop mid-packet doesn't leave the parser stuck waiting for bytes that will never arrive.
+
 ### Bitchat Side
 
 Implements the Bitchat BLE protocol as a native peer using NimBLE:
