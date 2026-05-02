@@ -43,6 +43,20 @@ private:
     uint32_t _mesh_retry_ms = 0;          // when we last attempted
     uint32_t _mesh_retry_interval = 5000; // starts at 5s, doubles up to 5min
 
+    // Track rising edge of mesh connection so we emit our NodeInfo once
+    // each time the TCP session comes up.
+    bool _mesh_was_connected = false;
+    void _publish_bridge_node_info();
+
+    // Non-blocking outbound chunk queue for long Bitchat→Mesh forwards.
+    struct PendingChunk { char text[240]; };
+    PendingChunk _pending_chunks[BRIDGE_CHUNK_MAX_CHUNKS] = {};
+    int          _pending_total = 0;
+    int          _pending_next  = 0;
+    uint32_t     _pending_send_at_ms = 0;
+    void _drain_pending_chunks();
+    int  _split_into_chunks(const char *sender_prefix, const char *body);
+
     // Deduplication ring buffer
     struct DedupEntry {
         uint32_t hash;

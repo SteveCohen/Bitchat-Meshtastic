@@ -78,6 +78,18 @@ void MeshtasticTCP::loop() {
         _send_heartbeat();
         _last_heartbeat_ms = millis();
     }
+
+    // Bridge NodeInfo: emit if pending, then re-send periodically so late
+    // joiners see us in their node list.
+    if (_config_complete && _bridge_node_num != 0) {
+        bool first  = _bridge_nodeinfo_pending;
+        bool stale  = (millis() - _last_nodeinfo_ms) > BRIDGE_NODEINFO_INTERVAL_MS;
+        if (first || stale) {
+            _emit_node_info();
+            _bridge_nodeinfo_pending = false;
+            _last_nodeinfo_ms = millis();
+        }
+    }
 }
 
 bool MeshtasticTCP::send_text(const char *text, uint32_t dest, uint8_t channel) {
@@ -101,6 +113,65 @@ bool MeshtasticTCP::send_text(const char *text, uint32_t dest, uint8_t channel) 
 
     _send_raw(tr_buf, tr_len);
     Serial.printf("[%s] Sent text (%d bytes) to %08x\n", TAG, text_len, dest);
+    return true;
+}
+
+// ── Bridge NodeInfo upload ───────────────────────────
+
+bool MeshtasticTCP::send_node_info(uint32_t bridge_node_num,
+                                    const char *long_name,
+                                    const char *short_name) {
+    if (bridge_node_num == 0) return false;
+    _bridge_node_num = bridge_node_num;
+    if (long_name) {
+        strncpy(_bridge_long_name, long_name, sizeof(_bridge_long_name) - 1);
+        _bridge_long_name[sizeof(_bridge_long_name) - 1] = '\0';
+    }
+    if (short_name) {
+        strncpy(_bridge_short_name, short_name, sizeof(_bridge_short_name) - 1);
+        _bridge_short_name[sizeof(_bridge_short_name) - 1] = '\0';
+    }
+    _bridge_nodeinfo_pending = true;
+    // If we're already connected, the next loop() tick will emit it.
+    return true;
+}
+
+bool MeshtasticTCP::_emit_node_info() {
+    if (!is_connected() || _bridge_node_num == 0) return false;
+
+    // User.id format: "!XXXXXXXX" (lowercase hex of node_num).
+    char id_buf[10];
+    snprintf(id_buf, sizeof(id_buf), "!%08x", _bridge_node_num);
+
+    uint8_t user_buf[128];
+    int user_len = mesh_proto::encode_user(user_buf, id_buf,
+                                            _bridge_long_name,
+                                            _bridge_short_name,
+                                            BRIDGE_HW_MODEL,
+                                            BRIDGE_ROLE);
+
+    uint8_t data_buf[MESH_MAX_PAYLOAD];
+    int data_len = mesh_proto::encode_data(data_buf, PORTNUM_NODEINFO_APP,
+                                            user_buf, user_len);
+
+    uint32_t pkt_id = mesh_proto::generate_packet_id(&_packet_id_counter);
+
+    uint8_t mp_buf[MESH_MAX_PAYLOAD];
+    // Explicit `from` so the radio doesn't substitute its own node ID.
+    int mp_len = mesh_proto::encode_mesh_packet(mp_buf,
+                                                 _bridge_node_num,
+                                                 MESH_BROADCAST,
+                                                 pkt_id,
+                                                 MESHTASTIC_CHANNEL,
+                                                 3,
+                                                 data_buf, data_len);
+
+    uint8_t tr_buf[MESH_MAX_PAYLOAD];
+    int tr_len = mesh_proto::encode_to_radio_packet(tr_buf, mp_buf, mp_len);
+
+    _send_raw(tr_buf, tr_len);
+    Serial.printf("[%s] Sent NodeInfo for !%08x (%s / %s)\n", TAG,
+                  _bridge_node_num, _bridge_long_name, _bridge_short_name);
     return true;
 }
 
@@ -274,8 +345,32 @@ void MeshtasticTCP::_handle_from_radio(const uint8_t *buf, int len) {
     }
 
     if (msg.valid && _on_message) {
-        // Don't echo back our own messages
+        // Don't echo back our own messages, or our own NodeInfo if we re-hear it
         if (msg.from_node == _my_node_id && _my_node_id != 0) return;
+        if (msg.from_node == _bridge_node_num && _bridge_node_num != 0) return;
+
+        // Position / Telemetry rate-limit and toggle gating.
+        if (msg.kind == mesh_proto::ParsedKind::POSITION) {
+            if (!BRIDGE_FORWARD_POSITION) return;
+            NodeEntry *entry = _find_or_create_node(msg.from_node);
+            if (entry && entry->last_pos_ms != 0 &&
+                (millis() - entry->last_pos_ms) < POSITION_FORWARD_MIN_MS) {
+                Serial.printf("[%s] Position rate-limited for %08x\n",
+                              TAG, msg.from_node);
+                return;
+            }
+            if (entry) entry->last_pos_ms = millis();
+        } else if (msg.kind == mesh_proto::ParsedKind::TELEMETRY) {
+            if (!BRIDGE_FORWARD_TELEMETRY) return;
+            NodeEntry *entry = _find_or_create_node(msg.from_node);
+            if (entry && entry->last_tel_ms != 0 &&
+                (millis() - entry->last_tel_ms) < TELEMETRY_FORWARD_MIN_MS) {
+                Serial.printf("[%s] Telemetry rate-limited for %08x\n",
+                              TAG, msg.from_node);
+                return;
+            }
+            if (entry) entry->last_tel_ms = millis();
+        }
 
         BridgeMessage bridge_msg;
         bridge_msg.origin = MessageOrigin::MESHTASTIC;
@@ -290,7 +385,22 @@ void MeshtasticTCP::_handle_from_radio(const uint8_t *buf, int len) {
             snprintf(bridge_msg.sender.display_name, sizeof(bridge_msg.sender.display_name),
                      "!%08x", msg.from_node);
         }
-        strncpy(bridge_msg.text, msg.text, sizeof(bridge_msg.text) - 1);
+
+        // For Position/Telemetry, append rx_time HH:MM:SS so successive
+        // (rate-limit-passing) reports produce distinct dedup hashes.
+        if ((msg.kind == mesh_proto::ParsedKind::POSITION ||
+             msg.kind == mesh_proto::ParsedKind::TELEMETRY) && msg.rx_time > 0) {
+            char stamped[256];
+            uint32_t s = msg.rx_time;
+            unsigned hh = (s / 3600) % 24;
+            unsigned mm = (s / 60) % 60;
+            unsigned ss =  s        % 60;
+            snprintf(stamped, sizeof(stamped), "%s @ %02u:%02u:%02u",
+                     msg.text, hh, mm, ss);
+            strncpy(bridge_msg.text, stamped, sizeof(bridge_msg.text) - 1);
+        } else {
+            strncpy(bridge_msg.text, msg.text, sizeof(bridge_msg.text) - 1);
+        }
         bridge_msg.timestamp_ms = millis();
 
         _on_message(bridge_msg);
@@ -330,6 +440,24 @@ const char* MeshtasticTCP::get_node_name(uint32_t node_id) const {
             return _nodes[i].long_name;
         }
     }
+    return nullptr;
+}
+
+MeshtasticTCP::NodeEntry* MeshtasticTCP::_find_or_create_node(uint32_t node_id) {
+    for (int i = 0; i < _node_count; i++) {
+        if (_nodes[i].id == node_id) return &_nodes[i];
+    }
+    if (_node_count < MAX_NODES) {
+        auto &e = _nodes[_node_count++];
+        e.id = node_id;
+        e.long_name[0]  = '\0';
+        e.short_name[0] = '\0';
+        e.last_pos_ms   = 0;
+        e.last_tel_ms   = 0;
+        return &e;
+    }
+    // Table full and node unknown — we accept missing rate-limit state for
+    // overflow nodes; messages still flow, just unrate-limited.
     return nullptr;
 }
 

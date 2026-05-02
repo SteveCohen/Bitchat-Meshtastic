@@ -84,10 +84,17 @@ inline int encode_data(uint8_t *buf, uint32_t portnum, const uint8_t *payload, i
 // ── MeshPacket encoding ───────────────────────────────
 
 // Encode MeshPacket { from:1, to:2, channel:3, decoded:4, id:6, hop_limit:9 }
-inline int encode_mesh_packet(uint8_t *buf, uint32_t to, uint32_t id,
-                               uint8_t channel, uint8_t hop_limit,
+// `from = 0` means "don't emit the field" — the radio fills it with its own
+// node ID. Pass a non-zero `from` (e.g. for bridge-originated NodeInfo) to
+// have the packet appear as if it came from a different node.
+inline int encode_mesh_packet(uint8_t *buf, uint32_t from, uint32_t to,
+                               uint32_t id, uint8_t channel, uint8_t hop_limit,
                                const uint8_t *data_buf, int data_len) {
     int n = 0;
+    // from (field 1, fixed32) — only emitted when nonzero
+    if (from != 0) {
+        n += encode_fixed32(buf + n, 1, from);
+    }
     // to (field 2, fixed32)
     n += encode_fixed32(buf + n, 2, to);
     // channel (field 3, varint)
@@ -103,6 +110,41 @@ inline int encode_mesh_packet(uint8_t *buf, uint32_t to, uint32_t id,
     n += encode_fixed32(buf + n, 6, id);
     // hop_limit (field 9, varint)
     n += encode_varint_field(buf + n, 9, hop_limit);
+    return n;
+}
+
+// Backwards-compatible overload (pre-Feature 1 callers).
+inline int encode_mesh_packet(uint8_t *buf, uint32_t to, uint32_t id,
+                               uint8_t channel, uint8_t hop_limit,
+                               const uint8_t *data_buf, int data_len) {
+    return encode_mesh_packet(buf, 0, to, id, channel, hop_limit,
+                              data_buf, data_len);
+}
+
+// ── User submessage encoding (NODEINFO_APP payload) ──
+// User { id(1, string), long_name(2, string), short_name(3, string),
+//        hw_model(5, varint enum), role(7, varint enum) }
+// Strings are wire-type-2 (length-delimited bytes). Returns bytes written.
+inline int encode_user(uint8_t *buf, const char *id, const char *long_name,
+                        const char *short_name, uint32_t hw_model,
+                        uint32_t role) {
+    int n = 0;
+    if (id && id[0]) {
+        n += encode_bytes_field(buf + n, 1,
+                                 (const uint8_t *)id, (int)strlen(id));
+    }
+    if (long_name && long_name[0]) {
+        n += encode_bytes_field(buf + n, 2,
+                                 (const uint8_t *)long_name,
+                                 (int)strlen(long_name));
+    }
+    if (short_name && short_name[0]) {
+        n += encode_bytes_field(buf + n, 3,
+                                 (const uint8_t *)short_name,
+                                 (int)strlen(short_name));
+    }
+    n += encode_varint_field(buf + n, 5, hw_model);
+    n += encode_varint_field(buf + n, 7, role);
     return n;
 }
 
@@ -190,8 +232,11 @@ inline int decode_field(const uint8_t *buf, int buf_len, ProtoField *field) {
 
 // ── Parsed text message from FromRadio ────────────────
 
+enum class ParsedKind : uint8_t { NONE = 0, TEXT, POSITION, TELEMETRY };
+
 struct ParsedTextMessage {
     bool valid = false;
+    ParsedKind kind = ParsedKind::NONE;
     uint32_t from_node = 0;
     uint32_t to_node = 0;
     uint32_t packet_id = 0;
@@ -199,6 +244,135 @@ struct ParsedTextMessage {
     uint32_t rx_time = 0;   // Unix seconds from MeshPacket.rx_time (field 9)
     char text[256] = {};
 };
+
+// ── Position / Telemetry helpers ──────────────────────
+// Reinterpret a 4-byte fixed32 from the wire as a float (little-endian on ESP32,
+// matching IEEE 754). Use memcpy to avoid alias-cast UB.
+inline float fixed32_to_float(uint32_t bits) {
+    float f;
+    memcpy(&f, &bits, 4);
+    return f;
+}
+
+// Format a Position protobuf (POSITION_APP=3 payload) into a one-line summary.
+// Position { latitude_i(1,sfixed32), longitude_i(2,sfixed32),
+//            altitude(3,varint int32), time(4,fixed32) }
+// Coords are E7 (degrees × 1e7) signed. Returns chars written (excluding NUL),
+// or 0 if no usable lat/lon was found.
+inline int format_position(const uint8_t *payload, int len,
+                            char *out, int out_len) {
+    int32_t lat_i = 0, lon_i = 0, alt = 0;
+    bool have_lat = false, have_lon = false, have_alt = false;
+    int pos = 0;
+    while (pos < len) {
+        ProtoField f;
+        int consumed = decode_field(payload + pos, len - pos, &f);
+        if (consumed < 0) break;
+        pos += consumed;
+        switch (f.field_num) {
+            case 1: if (f.wire_type == 5) {
+                lat_i = (int32_t)f.fixed32_val; have_lat = true;
+            } break;
+            case 2: if (f.wire_type == 5) {
+                lon_i = (int32_t)f.fixed32_val; have_lon = true;
+            } break;
+            case 3: if (f.wire_type == 0) {
+                alt = (int32_t)f.varint_val; have_alt = true;
+            } break;
+        }
+    }
+    if (!have_lat || !have_lon) return 0;
+    double lat = (double)lat_i / 1e7;
+    double lon = (double)lon_i / 1e7;
+    int n;
+    if (have_alt) {
+        n = snprintf(out, out_len, "\xF0\x9F\x93\x8D %.4f, %.4f (alt %dm)",
+                     lat, lon, (int)alt);
+    } else {
+        n = snprintf(out, out_len, "\xF0\x9F\x93\x8D %.4f, %.4f", lat, lon);
+    }
+    return (n < 0) ? 0 : n;
+}
+
+// Format a Telemetry protobuf (TELEMETRY_APP=67 payload) into a one-line summary.
+// Telemetry { time(1,fixed32), device_metrics(2,bytes),
+//             environment_metrics(3,bytes), ... }
+// DeviceMetrics: battery_level(1,varint), voltage(2,float),
+//                channel_utilization(3,float), air_util_tx(4,float)
+// EnvironmentMetrics: temperature(1,float), relative_humidity(2,float),
+//                     barometric_pressure(3,float)
+// Returns chars written, or 0 if no recognised metrics block was found.
+inline int format_telemetry(const uint8_t *payload, int len,
+                             char *out, int out_len) {
+    const uint8_t *dev = nullptr, *env = nullptr;
+    int dev_len = 0, env_len = 0;
+    int pos = 0;
+    while (pos < len) {
+        ProtoField f;
+        int consumed = decode_field(payload + pos, len - pos, &f);
+        if (consumed < 0) break;
+        pos += consumed;
+        if (f.wire_type == 2) {
+            if (f.field_num == 2)      { dev = f.bytes_val.data; dev_len = f.bytes_val.len; }
+            else if (f.field_num == 3) { env = f.bytes_val.data; env_len = f.bytes_val.len; }
+        }
+    }
+
+    if (dev) {
+        uint32_t battery = 0; bool have_batt = false;
+        float ch_util = 0.0f; bool have_ch = false;
+        int p = 0;
+        while (p < dev_len) {
+            ProtoField f;
+            int c = decode_field(dev + p, dev_len - p, &f);
+            if (c < 0) break;
+            p += c;
+            if (f.field_num == 1 && f.wire_type == 0) {
+                battery = f.varint_val; have_batt = true;
+            } else if (f.field_num == 3 && f.wire_type == 5) {
+                ch_util = fixed32_to_float(f.fixed32_val); have_ch = true;
+            }
+        }
+        if (have_batt && have_ch) {
+            int n = snprintf(out, out_len, "\xF0\x9F\x94\x8B %u%%, ch %.1f%%",
+                             (unsigned)battery, ch_util);
+            return (n < 0) ? 0 : n;
+        }
+        if (have_batt) {
+            int n = snprintf(out, out_len, "\xF0\x9F\x94\x8B %u%%", (unsigned)battery);
+            return (n < 0) ? 0 : n;
+        }
+    }
+
+    if (env) {
+        float temp = 0, rh = 0, pres = 0;
+        bool have_t = false, have_rh = false, have_p = false;
+        int p = 0;
+        while (p < env_len) {
+            ProtoField f;
+            int c = decode_field(env + p, env_len - p, &f);
+            if (c < 0) break;
+            p += c;
+            if (f.wire_type != 5) continue;
+            switch (f.field_num) {
+                case 1: temp = fixed32_to_float(f.fixed32_val); have_t = true; break;
+                case 2: rh   = fixed32_to_float(f.fixed32_val); have_rh = true; break;
+                case 3: pres = fixed32_to_float(f.fixed32_val); have_p = true; break;
+            }
+        }
+        if (have_t || have_rh || have_p) {
+            char buf[128]; int bp = 0;
+            bp += snprintf(buf + bp, sizeof(buf) - bp, "\xF0\x9F\x8C\xA1");
+            if (have_t)  bp += snprintf(buf + bp, sizeof(buf) - bp, " %.1f\xC2\xB0""C", temp);
+            if (have_rh) bp += snprintf(buf + bp, sizeof(buf) - bp, " %.0f%%RH", rh);
+            if (have_p)  bp += snprintf(buf + bp, sizeof(buf) - bp, " %.0fhPa", pres);
+            int n = snprintf(out, out_len, "%s", buf);
+            return (n < 0) ? 0 : n;
+        }
+    }
+
+    return 0;
+}
 
 // Parse a FromRadio payload looking for a text message.
 // Returns a ParsedTextMessage with valid=true if found.
@@ -265,15 +439,38 @@ inline ParsedTextMessage parse_from_radio(const uint8_t *buf, int len) {
         }
     }
 
-    if (portnum != PORTNUM_TEXT_MESSAGE_APP || !payload || payload_len == 0) {
+    if (!payload || payload_len == 0) return result;
+
+    if (portnum == PORTNUM_TEXT_MESSAGE_APP) {
+        int copy_len = (payload_len < (int)sizeof(result.text) - 1)
+                            ? payload_len : (int)sizeof(result.text) - 1;
+        memcpy(result.text, payload, copy_len);
+        result.text[copy_len] = '\0';
+        result.kind  = ParsedKind::TEXT;
+        result.valid = true;
         return result;
     }
 
-    // Copy text (truncate if needed)
-    int copy_len = (payload_len < (int)sizeof(result.text) - 1) ? payload_len : (int)sizeof(result.text) - 1;
-    memcpy(result.text, payload, copy_len);
-    result.text[copy_len] = '\0';
-    result.valid = true;
+    if (portnum == PORTNUM_POSITION_APP) {
+        int n = format_position(payload, payload_len,
+                                 result.text, (int)sizeof(result.text));
+        if (n > 0) {
+            result.kind  = ParsedKind::POSITION;
+            result.valid = true;
+        }
+        return result;
+    }
+
+    if (portnum == PORTNUM_TELEMETRY_APP) {
+        int n = format_telemetry(payload, payload_len,
+                                  result.text, (int)sizeof(result.text));
+        if (n > 0) {
+            result.kind  = ParsedKind::TELEMETRY;
+            result.valid = true;
+        }
+        return result;
+    }
+
     return result;
 }
 
