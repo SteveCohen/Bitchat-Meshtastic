@@ -36,8 +36,10 @@ struct BridgeMessage {
     MessageOrigin origin = MessageOrigin::BRIDGE_LOCAL;
     SenderIdentity sender;
 
-    // The text payload (UTF-8, null-terminated)
-    char text[256] = {};
+    // The text payload (UTF-8, null-terminated).
+    // 512 bytes covers a max-size Bitchat TLV (255 byte cap from the uint8_t
+    // length field) plus a "[B] sender: " prefix, with headroom.
+    char text[512] = {};
 
     // Timestamp (millis since boot)
     uint32_t timestamp_ms = 0;

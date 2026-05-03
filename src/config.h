@@ -44,6 +44,30 @@
 
 // ── Meshtastic protobuf field tags / port numbers ─────
 #define PORTNUM_TEXT_MESSAGE_APP  1
+#define PORTNUM_POSITION_APP      3
+#define PORTNUM_NODEINFO_APP      4
+#define PORTNUM_TELEMETRY_APP     67
+
+// ── Bridge NodeInfo upload (so Meshtastic phone apps see "BitBridge") ──
+#define BRIDGE_NODEINFO_INTERVAL_MS  (60UL * 60UL * 1000UL)  // re-send hourly
+#define BRIDGE_SHORT_NAME            "BBR"
+#define BRIDGE_HW_MODEL              255   // PRIVATE_HW
+#define BRIDGE_ROLE                  0     // CLIENT
+
+// ── Position / Telemetry forwarding (Meshtastic → Bitchat) ─────────────
+// Both default OFF — enable per deployment to surface GPS / battery / env
+// updates as one-line chat messages from the sender's virtual identity.
+#define BRIDGE_FORWARD_POSITION      0
+#define BRIDGE_FORWARD_TELEMETRY     0
+#define POSITION_FORWARD_MIN_MS      (5 * 60 * 1000)
+#define TELEMETRY_FORWARD_MIN_MS     (5 * 60 * 1000)
+
+// ── Long-message chunking (Bitchat → Meshtastic) ───────────────────────
+// Bitchat TLV length is uint8_t (255 byte cap per packet).
+// Meshtastic per-packet payload caps at MESH_DATA_MAX (233).
+// Outbound BLE→Mesh chunking splits long messages into "(N/M):" parts.
+#define BRIDGE_CHUNK_MAX_CHUNKS      4
+#define BRIDGE_CHUNK_DELAY_MS        1500
 
 // ── Bitchat protocol constants ────────────────────────
 #define BITCHAT_MAX_HOPS      7
@@ -100,7 +124,7 @@
 #define BITCHAT_ANNOUNCE_INTERVAL_MS (60 * 1000)  // Re-announce every 60s
 #define BITCHAT_SCAN_RSSI_MIN       (-70)
 #define BITCHAT_BLE_MTU             512
-#define BITCHAT_MAX_TEXT_LEN        100
+#define BITCHAT_MAX_TEXT_LEN        240   // ≤255 (TLV length is uint8_t)
 #define BITCHAT_MSG_CACHE_SIZE      128
 #define BITCHAT_MSG_CACHE_TTL_MS    (30 * 1000)
 

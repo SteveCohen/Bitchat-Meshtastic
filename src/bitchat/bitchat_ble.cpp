@@ -394,7 +394,9 @@ bool BitchatBLE::send_text(const char *text) {
         if (p.hs.phase == NOISE_HS_TRANSPORT) {
             // Peer has Noise session → send encrypted private message.
             // Inner payload: PrivateMessagePacket TLVs: messageID(0x00) + content(0x01)
-            uint8_t inner[256];
+            // Sized for 18-byte messageID TLV + 2-byte text TLV header + up
+            // to 240 bytes of content (BITCHAT_MAX_TEXT_LEN), with headroom.
+            uint8_t inner[320];
             int inner_len = 0;
             uint8_t msg_id[16];
             esp_fill_random(msg_id, sizeof(msg_id));

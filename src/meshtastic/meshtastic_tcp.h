@@ -30,24 +30,44 @@ private:
     // Packet ID counter
     uint32_t _packet_id_counter = 0;
 
-    // Node directory: maps node IDs to user names (learned during config)
+    // Node directory: maps node IDs to user names (learned during config).
+    // Also tracks per-node rate-limit timestamps for Position/Telemetry.
     struct NodeEntry {
         uint32_t id = 0;
         char long_name[40] = {};
         char short_name[5] = {};
+        uint32_t last_pos_ms = 0;
+        uint32_t last_tel_ms = 0;
     };
     static constexpr int MAX_NODES = 32;
     NodeEntry _nodes[MAX_NODES] = {};
     int _node_count = 0;
 
+    NodeEntry* _find_or_create_node(uint32_t node_id);
+
     void _store_node_info(const mesh_proto::ParsedNodeInfo &ni);
+
+    // Bridge NodeInfo upload state
+    uint32_t _bridge_node_num     = 0;
+    uint32_t _last_nodeinfo_ms    = 0;
+    char     _bridge_long_name[40] = {};
+    char     _bridge_short_name[5] = {};
+    bool     _bridge_nodeinfo_pending = false;
 
 public:
     // Look up a node's long_name by ID. Returns nullptr if unknown.
     const char* get_node_name(uint32_t node_id) const;
     uint32_t my_node_id() const { return _my_node_id; }
 
+    // Publish a User/NodeInfo for the bridge so it appears as a distinct
+    // node in the Meshtastic phone app's node list. Sends immediately if
+    // the TCP session is up, otherwise defers to the next loop() tick.
+    bool send_node_info(uint32_t bridge_node_num,
+                         const char *long_name, const char *short_name);
+
 private:
+    // Internal: do the actual encode + write.
+    bool _emit_node_info();
 
     // Heartbeat tracking
     unsigned long _last_heartbeat_ms = 0;
