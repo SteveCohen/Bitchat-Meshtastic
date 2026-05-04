@@ -19,6 +19,14 @@
 #include <mbedtls/ecp.h>
 #include <esp_random.h>
 
+// mbedtls 3.x marks struct fields as private and requires either
+// MBEDTLS_ALLOW_PRIVATE_ACCESS or the MBEDTLS_PRIVATE() accessor.
+// On older mbedtls 2.x (shipped with some arduino-esp32 versions) the
+// macro doesn't exist and fields are plain members, so provide a shim.
+#ifndef MBEDTLS_PRIVATE
+#define MBEDTLS_PRIVATE(member) member
+#endif
+
 // ── Noise protocol name (exactly 32 bytes) ───────────────────────────
 static const char NOISE_PROTO_NAME[32] = "Noise_XX_25519_ChaChaPoly_SHA256";
 
