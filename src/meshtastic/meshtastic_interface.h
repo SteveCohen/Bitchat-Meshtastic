@@ -29,6 +29,13 @@ public:
     // Returns true if the message was queued/sent successfully.
     virtual bool send_text(const char *text, uint32_t dest = 0xFFFFFFFF, uint8_t channel = 0) = 0;
 
+    // Publish a User/NodeInfo so the bridge appears as a distinct node in the
+    // Meshtastic phone-app node list. Default no-op so transports that don't
+    // support it (e.g. HTTP) still satisfy the interface.
+    virtual bool send_node_info(uint32_t /*node_num*/,
+                                 const char * /*long_name*/,
+                                 const char * /*short_name*/) { return false; }
+
     // Register a callback for incoming text messages.
     void on_message(MessageCallback cb) { _on_message = cb; }
 

@@ -39,7 +39,9 @@
 #endif
 
 // ── Noise protocol name (exactly 32 bytes) ───────────────────────────
-static const char NOISE_PROTO_NAME[32] = "Noise_XX_25519_ChaChaPoly_SHA256";
+// Stored as [33] to accommodate the trailing NUL the C string literal carries;
+// only the first 32 bytes are ever read (memcpy(_, NOISE_PROTO_NAME, 32) below).
+static const char NOISE_PROTO_NAME[33] = "Noise_XX_25519_ChaChaPoly_SHA256";
 
 // ── Data structures ──────────────────────────────────────────────────
 
