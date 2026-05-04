@@ -175,4 +175,5 @@ private:
     friend class BitchatBLECallbacks;
     friend class BitchatBLEServerCallbacks;
     friend class BitchatBLEScanCallbacks;
+    friend class BitchatBLEClientCallbacks;
 };

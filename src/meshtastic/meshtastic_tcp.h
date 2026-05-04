@@ -17,8 +17,9 @@ public:
     bool send_text(const char *text, uint32_t dest = MESH_BROADCAST, uint8_t channel = MESHTASTIC_CHANNEL) override;
 
 private:
-    // TCP connection
-    WiFiClient _client;
+    // TCP connection. mutable because Arduino's WiFiClient::connected() is
+    // non-const, but is_connected() is conceptually a query.
+    mutable WiFiClient _client;
     const char *_host;
     uint16_t _port;
     IPAddress _resolved_ip;

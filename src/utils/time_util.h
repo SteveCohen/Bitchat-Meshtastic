@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Arduino.h>
 #include <cstdint>
 #include <sys/time.h>
 

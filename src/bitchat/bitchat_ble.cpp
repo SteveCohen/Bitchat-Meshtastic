@@ -16,7 +16,7 @@ public:
 
     void onConnect(NimBLEServer *server, NimBLEConnInfo &info) override {
         uint8_t addr_bytes[6];
-        memcpy(addr_bytes, info.getAddress().getNative(), 6);
+        memcpy(addr_bytes, info.getAddress().getVal(), 6);
         // They connected to us → they are central, we are peripheral
         _p->_on_connect(info.getConnHandle(), addr_bytes, /*we_are_central=*/false);
         NimBLEDevice::startAdvertising();
@@ -214,34 +214,36 @@ void BitchatBLE::_init_ble_server(const char *name) {
     );
     _msg_char->setCallbacks(new BitchatBLECallbacks(this));
 
-    svc->start();
+    // NimBLE 2.x: services are auto-started when the server starts; the
+    // explicit start() is now a deprecated no-op.
 }
 
 void BitchatBLE::_start_advertising() {
     NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
     adv->addServiceUUID(BITCHAT_SERVICE_UUID);
-    adv->setScanResponse(true);
+    adv->enableScanResponse(true);
     adv->start();
 }
 
 // ── BLE scanning (central role) ──────────────────────────────────────
 
-// NimBLE 1.4 uses NimBLEAdvertisedDeviceCallbacks (not NimBLEScanCallbacks)
-class BitchatBLEScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
+// NimBLE 2.x: NimBLEScanCallbacks replaces NimBLEAdvertisedDeviceCallbacks; the
+// onResult parameter is now a const-pointer.
+class BitchatBLEScanCallbacks : public NimBLEScanCallbacks {
 public:
     BitchatBLEScanCallbacks(BitchatBLE *p) : _p(p) {}
 
-    void onResult(NimBLEAdvertisedDevice *dev) override {
-        _p->_on_scan_result(dev);
+    void onResult(const NimBLEAdvertisedDevice *dev) override {
+        _p->_on_scan_result(const_cast<NimBLEAdvertisedDevice *>(dev));
     }
 
 private:
     BitchatBLE *_p;
 };
 
-// Scan-complete callback (free function for NimBLE 1.4 API)
+// Scan-complete callback. NimBLE 2.x passes results by const-ref.
 static BitchatBLE *_g_ble_instance = nullptr;
-static void _scan_complete_cb(NimBLEScanResults results) {
+static void _scan_complete_cb(const NimBLEScanResults& results) {
     if (_g_ble_instance) {
         _g_ble_instance->_scanning = false;
         // Restart advertising after scan completes so new clients can discover us
@@ -261,11 +263,11 @@ void BitchatBLE::_start_scanning() {
     // Reuse a single callback instance to avoid leaking memory every scan cycle
     static BitchatBLEScanCallbacks scan_cb(this);
     scan_cb = BitchatBLEScanCallbacks(this);
-    scan->setAdvertisedDeviceCallbacks(&scan_cb, false);
+    scan->setScanCallbacks(&scan_cb, false);
 
     _scanning = true;
     _last_scan_ms = millis();
-    scan->start(10, _scan_complete_cb, false);  // 10s, non-blocking with callback
+    scan->start(10 * 1000, false, _scan_complete_cb);  // 10s timeout, non-blocking
     Serial.printf("[%s] Scanning for bitchat peers...\n", TAG);
 }
 
@@ -279,7 +281,7 @@ void BitchatBLE::_on_scan_result(NimBLEAdvertisedDevice *dev) {
     // Check if already connected to this address
     NimBLEAddress addr = dev->getAddress();
     for (auto &p : _peers) {
-        if (p.active && memcmp(p.ble_addr, addr.getNative(), 6) == 0) return;
+        if (p.active && memcmp(p.ble_addr, addr.getVal(), 6) == 0) return;
     }
 
     // Check if we have room
@@ -304,9 +306,10 @@ class BitchatBLEClientCallbacks : public NimBLEClientCallbacks {
 public:
     BitchatBLEClientCallbacks(BitchatBLE *p) : _p(p) {}
 
-    void onDisconnect(NimBLEClient *client) override {
-        uint16_t handle = client->getConnId();
-        Serial.printf("[BitchatBLE] Central connection lost, handle=%d\n", handle);
+    void onDisconnect(NimBLEClient *client, int reason) override {
+        uint16_t handle = client->getConnHandle();
+        Serial.printf("[BitchatBLE] Central connection lost, handle=%d reason=%d\n",
+                      handle, reason);
         _p->_on_disconnect(handle);
     }
 
@@ -342,9 +345,9 @@ void BitchatBLE::_connect_to_peripheral(NimBLEAdvertisedDevice *dev) {
         return;
     }
 
-    uint16_t handle = client->getConnId();
+    uint16_t handle = client->getConnHandle();
     uint8_t addr_bytes[6];
-    memcpy(addr_bytes, dev->getAddress().getNative(), 6);
+    memcpy(addr_bytes, dev->getAddress().getVal(), 6);
 
     // Register peer session BEFORE subscribing (so notify callback can find it)
     _on_connect(handle, addr_bytes, /*we_are_central=*/true);
@@ -365,7 +368,7 @@ void BitchatBLE::_connect_to_peripheral(NimBLEAdvertisedDevice *dev) {
                 auto &entry = _rx_queue[_rx_head];
                 memcpy(entry.data, data, length);
                 entry.len = (int)length;
-                entry.conn_handle = c->getRemoteService()->getClient()->getConnId();
+                entry.conn_handle = c->getRemoteService()->getClient()->getConnHandle();
                 _rx_head = next;
             }
         });
@@ -974,7 +977,7 @@ void BitchatBLE::_handle_announce(PeerSession *peer, const uint8_t *payload,
 
 // ── _handle_message (public text, type 0x02) ─────────────────────────
 
-void BitchatBLE::_handle_message(PeerSession * /*peer*/, const uint8_t *payload,
+void BitchatBLE::_handle_message(PeerSession *peer, const uint8_t *payload,
                                   int payload_len, const uint8_t *sender_id,
                                   uint8_t /*flags*/) {
     const uint8_t *text_val = nullptr;
