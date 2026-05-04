@@ -39,7 +39,13 @@
 #endif
 
 // ── Noise protocol name (exactly 32 bytes) ───────────────────────────
-static const char NOISE_PROTO_NAME[32] = "Noise_XX_25519_ChaChaPoly_SHA256";
+// The string is 32 chars + 1 null terminator (sizeof == 33). Code that
+// copies the protocol name uses memcpy(..., 32) to copy only the bytes
+// that go on the wire, ignoring the trailing null. The static_assert
+// guards against any future edit that breaks the 32-byte invariant.
+static const char NOISE_PROTO_NAME[] = "Noise_XX_25519_ChaChaPoly_SHA256";
+static_assert(sizeof(NOISE_PROTO_NAME) - 1 == 32,
+              "Noise protocol name must be exactly 32 bytes");
 
 // ── Data structures ──────────────────────────────────────────────────
 

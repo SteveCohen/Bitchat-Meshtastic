@@ -17,8 +17,9 @@ public:
     bool send_text(const char *text, uint32_t dest = MESH_BROADCAST, uint8_t channel = MESHTASTIC_CHANNEL) override;
 
 private:
-    // TCP connection
-    WiFiClient _client;
+    // TCP connection. Marked mutable because WiFiClient::connected() is
+    // non-const but is queried from is_connected() const.
+    mutable WiFiClient _client;
     const char *_host;
     uint16_t _port;
     IPAddress _resolved_ip;
