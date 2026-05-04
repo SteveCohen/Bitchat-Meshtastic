@@ -17,6 +17,7 @@
 #include <mbedtls/chachapoly.h>
 #include <mbedtls/ecdh.h>
 #include <mbedtls/ecp.h>
+#include <mbedtls/version.h>
 #include <esp_random.h>
 
 // mbedtls 3.x marks struct fields as private and requires either
@@ -25,6 +26,16 @@
 // macro doesn't exist and fields are plain members, so provide a shim.
 #ifndef MBEDTLS_PRIVATE
 #define MBEDTLS_PRIVATE(member) member
+#endif
+
+// mbedtls 2.x deprecated the int-returning SHA-256 entry points and
+// renamed them with a _ret suffix; in 3.x the bare names return int
+// again and the _ret aliases were removed. Redirect the bare names
+// to _ret on 2.x so this header compiles against both major versions.
+#if defined(MBEDTLS_VERSION_NUMBER) && MBEDTLS_VERSION_NUMBER < 0x03000000
+#define mbedtls_sha256_starts mbedtls_sha256_starts_ret
+#define mbedtls_sha256_update mbedtls_sha256_update_ret
+#define mbedtls_sha256_finish mbedtls_sha256_finish_ret
 #endif
 
 // ── Noise protocol name (exactly 32 bytes) ───────────────────────────
@@ -73,6 +84,10 @@ static inline int _sha256(const uint8_t *data, size_t len, uint8_t out[32]) {
 }
 
 // ── Symmetric state primitives ────────────────────────────────────────
+
+// Forward declaration — defined immediately after noise_ss_init.
+static inline void noise_mix_hash(NoiseSymmetricState *ss,
+                                   const uint8_t *data, size_t len);
 
 // Initialize SymmetricState: ck = h = NOISE_PROTO_NAME (exactly 32 bytes),
 // then MixHash(prologue). The iOS app always calls MixHash(prologue) even
