@@ -1,0 +1,14 @@
+# PlatformIO build artifacts and cache
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE / editor metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS detritus
+.DS_Store
+Thumbs.db
