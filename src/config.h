@@ -7,8 +7,8 @@
 #define WIFI_MODE          "AUTO"
 
 // Station mode (STA): connect to this network
-#define WIFI_SSID          "your-ssid"
-#define WIFI_PASSWORD      "your-password"
+#define WIFI_SSID          "Navy"
+#define WIFI_PASSWORD      "horseapplepie"
 
 // Access point mode (AP): create this network
 // The Meshtastic node connects to this network as a WiFi client.
@@ -26,6 +26,26 @@
 // if the Meshtastic node advertises itself via mDNS (most do by default).
 #define MESHTASTIC_HOST    "meshtastic.local"
 #define MESHTASTIC_PORT    4403
+
+// ── Meshtastic UDP-multicast transport (alternative to TCP) ───────────
+// When the firmware is built with -DMESHTASTIC_USE_UDP, the bridge
+// participates as a peer on the Meshtastic UDP-multicast mesh instead of
+// holding a single-client TCP API session. Requires
+// `network.enabled_protocols=1` (bit 0 = UDP_BROADCAST) on the node.
+#define MESH_UDP_GROUP     "224.0.0.69"
+#define MESH_UDP_PORT      4403
+
+// 16- or 32-byte channel PSK as hex (no 0x, no separators). Default below
+// is the well-known LongFast key. Override at build time with
+// `-DMESH_CHANNEL_PSK_HEX="..."` for custom channels.
+#ifndef MESH_CHANNEL_PSK_HEX
+#define MESH_CHANNEL_PSK_HEX "D4F1BB3A20290759F0BCFFABCF4E6901"
+#endif
+
+// Bridge's own Meshtastic node_num. 0 (default) = derive from BLE MAC.
+#ifndef BRIDGE_MESH_NODE_NUM
+#define BRIDGE_MESH_NODE_NUM 0
+#endif
 
 // ── Bridge behaviour ──────────────────────────────────
 #define BRIDGE_NAME        "BitBridge"

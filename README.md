@@ -106,6 +106,13 @@ pio run -e esp32s3 -t upload
 # ESP32-S3 with PSRAM
 pio run -e esp32s3-psram -t upload
 
+# Wemos Lolin S3 Mini (ESP32-S3FH4R2, 4MB flash + 2MB QSPI PSRAM)
+pio run -e esp32s3-lolin-mini -t upload
+
+# Same Lolin S3 Mini, but using Meshtastic UDP-multicast instead of the
+# TCP API — see "Transport: TCP vs. UDP" below
+pio run -e esp32s3-lolin-mini-udp -t upload
+
 # ESP32-C6
 pio run -e esp32c6 -t upload
 ```
@@ -136,6 +143,32 @@ NTP sync OK (epoch: 1712345678000)
 [Bridge] Bridge started
 [BLE] Initialized, advertising as BitBridge
 ```
+
+### Transport: TCP vs. UDP
+
+The bridge can talk to Meshtastic two ways:
+
+**TCP API** (default, all envs without `-udp`): the bridge holds a single-client unicast session on port 4403 and gets a full NodeDB dump at handshake. Drawback — Meshtastic's TCP API only allows **one** client at a time, so if a phone or laptop is already connected via TCP/IP the bridge will time out on the config handshake until that client disconnects.
+
+**UDP multicast** (envs ending in `-udp`): the bridge joins `224.0.0.69:4403` and acts as a peer on the mesh, the same way other Meshtastic nodes do over LAN. No handshake, no per-client locking — multiple consumers coexist.
+
+Enable UDP on the node first:
+```bash
+meshtastic --host 192.168.1.100 --set network.enabled_protocols 1
+# bit 0 = UDP_BROADCAST. Reboot the node to apply.
+```
+
+Then flash the matching env:
+```bash
+pio run -e esp32s3-lolin-mini-udp -t upload
+```
+
+The bridge encrypts/decrypts SubPackets with the channel PSK. The default in [src/config.h](src/config.h) is the well-known LongFast key. For a custom channel, override at build time:
+```ini
+build_flags = -DMESH_CHANNEL_PSK_HEX="<32-or-64-hex-chars>"
+```
+
+UDP-mode caveats: no NodeDB at startup (names populate lazily as nodes re-broadcast their NodeInfo, ~every 30 min); only one channel bridges through (the one matching the PSK); the bridge picks its own `node_num` from its BLE MAC unless `BRIDGE_MESH_NODE_NUM` is set.
 
 ### AP Mode (battery / remote operation)
 

@@ -3,13 +3,21 @@
 #include <ESPmDNS.h>
 #include "config.h"
 #include "utils/time_util.h"
-#include "meshtastic/meshtastic_tcp.h"
+#if defined(MESHTASTIC_USE_UDP)
+  #include "meshtastic/meshtastic_udp.h"
+#else
+  #include "meshtastic/meshtastic_tcp.h"
+#endif
 #include "bitchat/bitchat_ble.h"
 #include "bridge/bridge_manager.h"
 
 // ── Global instances ─────────────────────────────────
 
+#if defined(MESHTASTIC_USE_UDP)
+static MeshtasticUDP meshtastic;
+#else
 static MeshtasticTCP meshtastic;
+#endif
 static BitchatBLE bitchat;
 // BridgeManager is initialized in setup() after identity is ready
 static BridgeManager *bridge = nullptr;
