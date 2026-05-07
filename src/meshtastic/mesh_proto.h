@@ -121,6 +121,31 @@ inline int encode_mesh_packet(uint8_t *buf, uint32_t to, uint32_t id,
                               data_buf, data_len);
 }
 
+// Same shape as encode_mesh_packet but emits the AES-encrypted SubPacket
+// in field 22 (`encrypted`) instead of the plaintext Data submessage in
+// field 4 (`decoded`). This is what the UDP-multicast transport needs —
+// upstream firmware's UdpMulticastHandler.onReceive() drops anything
+// without `encrypted_tag`. `from = 0` skips the field (radio fills it in).
+inline int encode_mesh_packet_encrypted(uint8_t *buf,
+                                         uint32_t from, uint32_t to,
+                                         uint32_t id, uint8_t channel,
+                                         uint8_t hop_limit,
+                                         const uint8_t *enc_buf, int enc_len) {
+    int n = 0;
+    if (from != 0) {
+        n += encode_fixed32(buf + n, 1, from);
+    }
+    n += encode_fixed32(buf + n, 2, to);
+    if (channel != 0) {
+        n += encode_varint_field(buf + n, 3, channel);
+    }
+    n += encode_fixed32(buf + n, 6, id);
+    n += encode_varint_field(buf + n, 9, hop_limit);
+    // encrypted (field 22, length-delimited bytes)
+    n += encode_bytes_field(buf + n, 22, enc_buf, enc_len);
+    return n;
+}
+
 // ── User submessage encoding (NODEINFO_APP payload) ──
 // User { id(1, string), long_name(2, string), short_name(3, string),
 //        hw_model(5, varint enum), role(7, varint enum) }
@@ -472,6 +497,99 @@ inline ParsedTextMessage parse_from_radio(const uint8_t *buf, int len) {
     }
 
     return result;
+}
+
+// Walk a MeshPacket protobuf (e.g. one received as a UDP datagram) and
+// extract the routing header + the encrypted SubPacket bytes (field 22).
+// Caller decrypts the bytes with mesh_crypt() then calls parse_data_subpacket
+// to extract portnum/payload.
+struct ParsedMeshPacket {
+    bool      valid       = false;
+    uint32_t  from_node   = 0;
+    uint32_t  to_node     = 0;
+    uint32_t  packet_id   = 0;
+    uint8_t   channel     = 0;
+    uint8_t   hop_limit   = 0;
+    const uint8_t *encrypted = nullptr;   // points into caller's buffer
+    int       encrypted_len  = 0;
+};
+
+inline ParsedMeshPacket parse_mesh_packet(const uint8_t *buf, int len) {
+    ParsedMeshPacket out;
+    int pos = 0;
+    while (pos < len) {
+        ProtoField f;
+        int consumed = decode_field(buf + pos, len - pos, &f);
+        if (consumed < 0) break;
+        pos += consumed;
+        switch (f.field_num) {
+            case 1:  if (f.wire_type == 5) out.from_node  = f.fixed32_val; break;
+            case 2:  if (f.wire_type == 5) out.to_node    = f.fixed32_val; break;
+            case 3:  if (f.wire_type == 0) out.channel    = (uint8_t)f.varint_val; break;
+            case 6:  if (f.wire_type == 5) out.packet_id  = f.fixed32_val; break;
+            case 9:  if (f.wire_type == 0) out.hop_limit  = (uint8_t)f.varint_val; break;
+            case 22: if (f.wire_type == 2) {
+                         out.encrypted     = f.bytes_val.data;
+                         out.encrypted_len = f.bytes_val.len;
+                     }
+                     break;
+            default: break;
+        }
+    }
+    out.valid = (out.encrypted != nullptr && out.encrypted_len > 0
+                 && out.packet_id != 0 && out.from_node != 0);
+    return out;
+}
+
+// Walk a Data submessage (post-decryption) and fill a ParsedTextMessage the
+// same way parse_from_radio does for TCP. Reused by the UDP path.
+inline bool parse_data_subpacket(const uint8_t *data_buf, int data_len,
+                                  ParsedTextMessage &result) {
+    uint32_t portnum = 0;
+    const uint8_t *payload = nullptr;
+    int payload_len = 0;
+    int pos = 0;
+    while (pos < data_len) {
+        ProtoField f;
+        int consumed = decode_field(data_buf + pos, data_len - pos, &f);
+        if (consumed < 0) break;
+        pos += consumed;
+        if (f.field_num == 1 && f.wire_type == 0) portnum = f.varint_val;
+        else if (f.field_num == 2 && f.wire_type == 2) {
+            payload     = f.bytes_val.data;
+            payload_len = f.bytes_val.len;
+        }
+    }
+    if (!payload || payload_len == 0) return false;
+
+    if (portnum == PORTNUM_TEXT_MESSAGE_APP) {
+        int n = (payload_len < (int)sizeof(result.text) - 1)
+                  ? payload_len : (int)sizeof(result.text) - 1;
+        memcpy(result.text, payload, n);
+        result.text[n] = '\0';
+        result.kind  = ParsedKind::TEXT;
+        result.valid = true;
+        return true;
+    }
+    if (portnum == PORTNUM_POSITION_APP) {
+        if (format_position(payload, payload_len, result.text,
+                            (int)sizeof(result.text)) > 0) {
+            result.kind  = ParsedKind::POSITION;
+            result.valid = true;
+            return true;
+        }
+        return false;
+    }
+    if (portnum == PORTNUM_TELEMETRY_APP) {
+        if (format_telemetry(payload, payload_len, result.text,
+                             (int)sizeof(result.text)) > 0) {
+            result.kind  = ParsedKind::TELEMETRY;
+            result.valid = true;
+            return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 // Check if a FromRadio contains config_complete_id matching our nonce
